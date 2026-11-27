@@ -238,7 +238,8 @@ class HidController(
             return
         }
         val ok = h.connect(device)
-        onStatus("connect(${device.name ?: device.address}) returned $ok")
+        if (ok) onStatus("Connecting to ${device.name ?: device.address}...")
+        else onStatus("Could not connect to ${device.name ?: device.address}")
     }
 
     override val isConnected: Boolean get() = host != null
@@ -251,7 +252,7 @@ class HidController(
         val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter ?: return
         val device = adapter.bondedDevices?.firstOrNull { it.address == addr } ?: return
         val ok = h.connect(device)
-        onStatus("reconnect(${device.name ?: device.address}) returned $ok")
+        if (ok) onStatus("Reconnecting to ${device.name ?: device.address}...")
     }
 
     private fun send(id: Int, data: ByteArray) {

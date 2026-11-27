@@ -87,6 +87,15 @@ class HidService : Service() {
         return START_STICKY
     }
 
+    // Swiping the app away from recents must not stop the link; keep the notification and backend.
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        if (hasBluetoothPermission()) {
+            refreshNotification()
+            startBackendIfAllowed()
+        }
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
         HidHost.notifyService = null
         try {

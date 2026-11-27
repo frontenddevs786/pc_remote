@@ -7,6 +7,11 @@ import android.app.AlertDialog
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.content.Intent
+import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import android.os.PowerManager
+import android.provider.Settings
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.content.res.Configuration
@@ -88,6 +93,8 @@ class MainActivity : Activity() {
     private lateinit var welcome: LinearLayout     // logo + pairing card, shown only while not connected
     private lateinit var pairCard: LinearLayout
     private lateinit var fullBtn: ImageView
+    private lateinit var discoverBtn: Button
+    private lateinit var connectBtn: Button
     private lateinit var fullDrawerItem: LinearLayout
     private lateinit var bottomPanel: LinearLayout
     private lateinit var pad: TouchpadView
@@ -122,6 +129,9 @@ class MainActivity : Activity() {
     private var fullScreen = false
     private var resetting = false
     private var typed = ""      // text already sent to the PC
+    private var discoverBusy = false   // Discoverable pressed, waiting for the PC
+    private var connectBusy = false    // Connect pressed, waiting for the PC
+    private val uiHandler = Handler(Looper.getMainLooper())
 
     // theming registries
     private class Surf(val view: View, val kind: Int, val radiusDp: Int)
@@ -198,6 +208,7 @@ class MainActivity : Activity() {
     private fun switchMode() {
         bleMode = !bleMode
         prefs.edit().putBoolean("ble", bleMode).apply()
+        clearPairBusy()
         status.text = pairHint
         showConnected(false)
         HidHost.switchMode(applicationContext, bleMode)
@@ -211,12 +222,14 @@ class MainActivity : Activity() {
     private fun showConnected(connected: Boolean) {
         val changed = linked != connected
         linked = connected
+        if (connected) clearPairBusy()
         if (!connected) {
             fullScreen = false     // leave full-screen if the link drops
-            status.text = pairHint
+            if (changed) status.text = pairHint
         }
         refreshLayout()
         updateStatusUi()
+        if (changed && connected) maybeAskBackgroundAccess()
         if (changed && !connected) {
             welcome.alpha = 0f
             welcome.animate().alpha(1f).setDuration(250).start()
@@ -248,11 +261,107 @@ class MainActivity : Activity() {
         statusDot.background = dot
     }
 
-    // Routine events are not shown; only real problems appear in the pairing card.
+    // Routine events are hidden; problems and the progress of Discoverable / Connect are shown.
     private fun appendLog(msg: String) {
         val problem = listOf("cannot", "could not", "failed", "turn bluetooth", "not ready", "not support", "not registered")
             .any { msg.contains(it, ignoreCase = true) }
-        if (problem) runOnUiThread { status.text = msg }
+        val progress = listOf("Visible to the PC", "Connecting to", "Reconnecting to")
+            .any { msg.startsWith(it) }
+        if (problem) {
+            runOnUiThread {
+                clearPairBusy()
+                status.text = msg
+            }
+        } else if (progress) {
+            runOnUiThread { status.text = msg }
+        }
+    }
+
+    // ---------- Discoverable / Connect feedback ----------
+
+    private fun refreshPairButtons() {
+        discoverBtn.text = if (discoverBusy) "Discoverable..." else "Discoverable"
+        connectBtn.text = if (connectBusy) "Connecting..." else "Connect"
+        discoverBtn.isEnabled = !discoverBusy
+        connectBtn.isEnabled = !connectBusy
+        discoverBtn.alpha = if (discoverBusy) 0.65f else 1f
+        connectBtn.alpha = if (connectBusy) 0.65f else 1f
+    }
+
+    private fun clearPairBusy() {
+        uiHandler.removeCallbacksAndMessages(null)
+        discoverBusy = false
+        connectBusy = false
+        refreshPairButtons()
+    }
+
+    private fun onDiscoverable() {
+        ensureBackend()
+        if (bleMode) {
+            discoverBusy = true
+            connectBusy = false
+            refreshPairButtons()
+            status.text = "Making this phone visible..."
+            hid.advertise()
+            uiHandler.removeCallbacksAndMessages(null)
+            uiHandler.postDelayed({ clearPairBusy() }, 120_000)
+        } else {
+            makeDiscoverable()
+        }
+    }
+
+    private fun onConnect() {
+        ensureBackend()
+        if (bleMode) {
+            connectBusy = true
+            discoverBusy = false
+            refreshPairButtons()
+            status.text = "Waiting for your PC to connect. It must be paired in Windows Bluetooth settings."
+            hid.advertise()
+            uiHandler.removeCallbacksAndMessages(null)
+            uiHandler.postDelayed({ clearPairBusy() }, 60_000)
+        } else {
+            pickDevice()
+        }
+    }
+
+    // ---------- keep running in the background ----------
+
+    private fun isIgnoringBatteryOpt(): Boolean =
+        (getSystemService(POWER_SERVICE) as PowerManager).isIgnoringBatteryOptimizations(packageName)
+
+    private fun requestBackgroundAccess() {
+        try {
+            if (!isIgnoringBatteryOpt()) {
+                startActivity(
+                    Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                        .setData(Uri.parse("package:$packageName"))
+                )
+            } else {
+                startActivity(
+                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).setData(Uri.parse("package:$packageName"))
+                )
+            }
+        } catch (e: Exception) {
+            startActivity(Intent(Settings.ACTION_SETTINGS))
+        }
+    }
+
+    /** One-time prompt after the first successful connection. */
+    private fun maybeAskBackgroundAccess() {
+        if (prefs.getBoolean("bg_asked", false) || isIgnoringBatteryOpt()) return
+        prefs.edit().putBoolean("bg_asked", true).apply()
+        dialogBuilder()
+            .setTitle("Keep connected in the background")
+            .setMessage(
+                "Some phones stop apps when you close them, which disconnects your PC. " +
+                    "Allow PC Remote to run without battery restrictions so the connection stays alive. " +
+                    "On vivo, Xiaomi, Oppo and similar phones also enable Auto-start / Background activity " +
+                    "for this app in the phone's settings."
+            )
+            .setPositiveButton("Allow") { _, _ -> requestBackgroundAccess() }
+            .setNegativeButton("Not now", null)
+            .show()
     }
 
     // ---------- permissions ----------
@@ -615,10 +724,9 @@ class MainActivity : Activity() {
         statusParams.rightMargin = dp(12)
         welcome.addView(status, statusParams)
 
-        pairCard = row(
-            btn("Discoverable", accent = true) { ensureBackend(); if (bleMode) hid.advertise() else makeDiscoverable() },
-            btn("Connect") { ensureBackend(); if (bleMode) hid.advertise() else pickDevice() }
-        )
+        discoverBtn = btn("Discoverable", accent = true) { onDiscoverable() }
+        connectBtn = btn("Connect") { onConnect() }
+        pairCard = row(discoverBtn, connectBtn)
         welcome.addView(pairCard, lp(MATCH, WRAP))
 
         content.addView(welcome, lp(MATCH, 0, 1f))
@@ -783,6 +891,10 @@ class MainActivity : Activity() {
             setFullScreen(true)
         }
         drawer.addView(fullDrawerItem)
+        drawer.addView(drawerItem(Ic.TUNE, "Keep running in background") {
+            closeDrawer()
+            requestBackgroundAccess()
+        })
         drawer.addView(drawerItem(Ic.HELP, "How to connect") {
             closeDrawer()
             showHelp()
@@ -1004,7 +1116,25 @@ class MainActivity : Activity() {
     private fun makeDiscoverable() {
         val i = Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE)
             .putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 300)
-        startActivity(i)
+        @Suppress("DEPRECATION")
+        startActivityForResult(i, 2)
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != 2) return
+        if (resultCode == RESULT_CANCELED) {
+            clearPairBusy()
+            status.text = "Discoverable was cancelled. Tap Discoverable to try again."
+        } else {
+            discoverBusy = true
+            connectBusy = false
+            refreshPairButtons()
+            status.text = "Discoverable for 5 minutes. On Windows: Settings > Bluetooth > Add device > Bluetooth, then pick this phone."
+            uiHandler.removeCallbacksAndMessages(null)
+            uiHandler.postDelayed({ clearPairBusy() }, 300_000)
+        }
     }
 
     private fun pickDevice() {
@@ -1017,7 +1147,12 @@ class MainActivity : Activity() {
         dialogBuilder()
             .setTitle("Connect to")
             .setItems(devices.map { it.name ?: it.address }.toTypedArray()) { _, i ->
+                connectBusy = true
+                refreshPairButtons()
+                status.text = "Connecting to ${devices[i].name ?: devices[i].address}..."
                 hid.connectTo(devices[i])
+                uiHandler.removeCallbacksAndMessages(null)
+                uiHandler.postDelayed({ clearPairBusy() }, 20_000)
             }
             .show()
     }

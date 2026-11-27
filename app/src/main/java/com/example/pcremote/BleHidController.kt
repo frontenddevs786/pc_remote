@@ -398,7 +398,8 @@ class BleHidController(
     private fun deliver(r: Report) {
         val dev = host ?: return
         val ch = chFor(r.id) ?: return
-        if (!subscribed.contains(r.id)) return
+        // Not gated on 'subscribed': a bonded PC may keep its notification setting across reconnects
+        // (or after this app restarted) and then never rewrites it, which would silence every report.
         sendSem.tryAcquire(100, TimeUnit.MILLISECONDS)
         ch.setValue(r.data)
         val ok = server?.notifyCharacteristicChanged(dev, ch, false) ?: false
