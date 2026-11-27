@@ -41,11 +41,21 @@ class MainActivity : Activity() {
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
+    private val logLines = ArrayDeque<String>()
+
+    private fun appendLog(msg: String) {
+        runOnUiThread {
+            logLines.addLast(msg)
+            while (logLines.size > 8) logLines.removeFirst()
+            status.text = logLines.joinToString("\n")
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         buildUi()
-        hid = HidController(this) { msg -> runOnUiThread { status.text = msg } }
+        hid = HidController(this) { msg -> appendLog(msg) }
         startWhenPermitted()
     }
 
@@ -141,7 +151,8 @@ class MainActivity : Activity() {
         status = TextView(this).apply {
             text = "Starting..."
             setTextColor(Color.WHITE)
-            textSize = 13f
+            textSize = 11f
+            minLines = 8
             setPadding(dp(4), dp(4), dp(4), dp(8))
         }
         root.addView(status)

@@ -93,27 +93,60 @@ class HidController(
     @Volatile private var host: BluetoothDevice? = null
     private val executor = Executors.newSingleThreadExecutor()
 
+    @Volatile var isRegistered = false
+        private set
+
+    private fun stateName(state: Int) = when (state) {
+        BluetoothProfile.STATE_CONNECTED -> "CONNECTED"
+        BluetoothProfile.STATE_CONNECTING -> "connecting"
+        BluetoothProfile.STATE_DISCONNECTING -> "disconnecting"
+        BluetoothProfile.STATE_DISCONNECTED -> "disconnected"
+        else -> "state $state"
+    }
+
     private val callback = object : BluetoothHidDevice.Callback() {
         override fun onAppStatusChanged(pluggedDevice: BluetoothDevice?, registered: Boolean) {
-            if (registered) {
-                onStatus("Ready. Tap 'Discoverable', then on your PC: Settings > Bluetooth > Add device > Bluetooth > pick this phone.")
-            } else {
-                onStatus("Bluetooth keyboard not registered")
-            }
+            isRegistered = registered
+            onStatus("App registered=$registered plugged=${pluggedDevice?.name}")
+            if (registered) onStatus("READY: now pair/connect from the PC")
         }
 
         override fun onConnectionStateChanged(device: BluetoothDevice, state: Int) {
+            onStatus("${device.name ?: device.address}: ${stateName(state)}")
             when (state) {
-                BluetoothProfile.STATE_CONNECTED -> {
-                    host = device
-                    onStatus("Connected to ${device.name ?: device.address}")
-                }
-                BluetoothProfile.STATE_CONNECTING -> onStatus("Connecting...")
-                BluetoothProfile.STATE_DISCONNECTED -> {
-                    if (host?.address == device.address) host = null
-                    onStatus("Disconnected. Tap 'Connect' to reconnect.")
-                }
+                BluetoothProfile.STATE_CONNECTED -> host = device
+                BluetoothProfile.STATE_DISCONNECTED -> if (host?.address == device.address) host = null
             }
+        }
+
+        // Windows asks for these right after connecting; unanswered requests can make it drop the link.
+        override fun onGetReport(device: BluetoothDevice, type: Byte, id: Byte, bufferSize: Int) {
+            onStatus("PC: GET_REPORT id=$id")
+            val size = when (id.toInt()) {
+                ID_KEYBOARD -> 8
+                ID_MOUSE -> 4
+                ID_CONSUMER -> 2
+                else -> 0
+            }
+            if (size > 0) {
+                hid?.replyReport(device, type, id, ByteArray(size))
+            } else {
+                hid?.reportError(device, BluetoothHidDevice.ERROR_RSP_INVALID_REPORT_ID)
+            }
+        }
+
+        override fun onSetReport(device: BluetoothDevice, type: Byte, id: Byte, data: ByteArray) {
+            onStatus("PC: SET_REPORT id=$id")
+            hid?.reportError(device, BluetoothHidDevice.ERROR_RSP_SUCCESS)
+        }
+
+        override fun onSetProtocol(device: BluetoothDevice, protocol: Byte) {
+            onStatus("PC: SET_PROTOCOL $protocol")
+        }
+
+        override fun onVirtualCableUnplug(device: BluetoothDevice) {
+            onStatus("PC removed the virtual cable")
+            host = null
         }
     }
 
@@ -130,6 +163,7 @@ class HidController(
                 DESCRIPTOR
             )
             val ok = h.registerApp(sdp, null, null, executor, callback)
+            onStatus("registerApp() returned $ok")
             if (!ok) onStatus("Could not register as a Bluetooth keyboard (is another app using it?)")
         }
 
@@ -149,7 +183,9 @@ class HidController(
             onStatus("Please turn Bluetooth on, then reopen the app")
             return
         }
+        onStatus("${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}, Android ${android.os.Build.VERSION.RELEASE}")
         val ok = adapter.getProfileProxy(context, serviceListener, BluetoothProfile.HID_DEVICE)
+        onStatus("getProfileProxy(HID_DEVICE) returned $ok")
         if (!ok) onStatus("This phone does not support the Bluetooth HID device profile")
     }
 
@@ -166,7 +202,17 @@ class HidController(
     }
 
     fun connectTo(device: BluetoothDevice) {
-        hid?.connect(device)
+        val h = hid
+        if (h == null) {
+            onStatus("Not ready: HID service not connected yet")
+            return
+        }
+        if (!isRegistered) {
+            onStatus("Not ready: app is not registered as a keyboard")
+            return
+        }
+        val ok = h.connect(device)
+        onStatus("connect(${device.name ?: device.address}) returned $ok")
     }
 
     val isConnected: Boolean get() = host != null
