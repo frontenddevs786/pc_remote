@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="96dp"
+    android:height="96dp"
+    android:viewportWidth="72"
+    android:viewportHeight="72">
+    <!-- rounded tile -->
+    <path
+        android:fillColor="#1E2A44"
+        android:pathData="M16,0 L56,0 A16,16 0 0 1 72,16 L72,56 A16,16 0 0 1 56,72 L16,72 A16,16 0 0 1 0,56 L0,16 A16,16 0 0 1 16,0 Z" />
+    <group android:translateX="-18" android:translateY="-18">
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M38,32 L70,32 A8,8 0 0 1 78,40 L78,68 A8,8 0 0 1 70,76 L38,76 A8,8 0 0 1 30,68 L30,40 A8,8 0 0 1 38,32 Z" />
+        <path
+            android:fillColor="#1E2A44"
+            android:pathData="M30,64 L78,64 L78,66 L30,66 Z" />
+        <path
+            android:fillColor="#1E2A44"
+            android:pathData="M53,66 L55,66 L55,76 L53,76 Z" />
+        <path
+            android:fillColor="#2F6BFF"
+            android:pathData="M44,38 L44,58 L49,53 L53,62 L56.5,60.5 L52.5,51.5 L59,51 Z" />
+    </group>
+</vector>

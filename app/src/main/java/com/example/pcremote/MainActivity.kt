@@ -85,7 +85,10 @@ class MainActivity : Activity() {
     private lateinit var frame: FrameLayout
     private lateinit var content: LinearLayout
     private lateinit var topBar: LinearLayout
+    private lateinit var welcome: LinearLayout     // logo + pairing card, shown only while not connected
     private lateinit var pairCard: LinearLayout
+    private lateinit var fullBtn: ImageView
+    private lateinit var fullDrawerItem: LinearLayout
     private lateinit var bottomPanel: LinearLayout
     private lateinit var pad: TouchpadView
     private lateinit var status: TextView        // message inside the pairing card
@@ -206,13 +209,32 @@ class MainActivity : Activity() {
     }
 
     private fun showConnected(connected: Boolean) {
+        val changed = linked != connected
         linked = connected
-        if (!connected && fullScreen) {
-            setFullScreen(false)   // bring the pairing card back if the link drops
+        if (!connected) {
+            fullScreen = false     // leave full-screen if the link drops
+            status.text = pairHint
         }
-        pairCard.visibility = if (connected || fullScreen) View.GONE else View.VISIBLE
-        if (!connected) status.text = pairHint
+        refreshLayout()
         updateStatusUi()
+        if (changed && !connected) {
+            welcome.alpha = 0f
+            welcome.animate().alpha(1f).setDuration(250).start()
+        }
+    }
+
+    /**
+     * Not connected: only the logo and the pairing block are shown.
+     * Connected: touchpad, buttons and the full-screen controls appear.
+     */
+    private fun refreshLayout() {
+        welcome.visibility = if (linked) View.GONE else View.VISIBLE
+        pad.visibility = if (linked) View.VISIBLE else View.GONE
+        bottomPanel.visibility = if (linked && !fullScreen) View.VISIBLE else View.GONE
+        topBar.visibility = if (fullScreen) View.GONE else View.VISIBLE
+        fullBtn.visibility = if (linked) View.VISIBLE else View.GONE
+        fullDrawerItem.visibility = if (linked) View.VISIBLE else View.GONE
+        fab.visibility = if (fullScreen) View.VISIBLE else View.GONE
     }
 
     private fun updateStatusUi() {
@@ -529,6 +551,7 @@ class MainActivity : Activity() {
 
         setContentView(frame)
         applyTheme()
+        refreshLayout()
     }
 
     private fun buildTopBar() {
@@ -554,6 +577,7 @@ class MainActivity : Activity() {
         titleCol.addView(statusRow)
 
         val full = iconBtn(Ic.EXPAND) { setFullScreen(true) }
+        fullBtn = full
 
         topBar.addView(menu, lp(dp(44), dp(44)))
         val titleParams = lp(0, WRAP, 1f)
@@ -563,27 +587,41 @@ class MainActivity : Activity() {
         content.addView(topBar, lp(MATCH, dp(56)))
     }
 
+    /** Centered logo followed by the "Connect to your PC" block. Hidden once a PC is connected. */
     private fun buildPairCard() {
-        status = txt(pairHint, 12f, 1)
-        val statusParams = lp(MATCH, WRAP)
-        statusParams.topMargin = dp(2)
-        statusParams.bottomMargin = dp(6)
+        welcome = LinearLayout(this)
+        welcome.orientation = LinearLayout.VERTICAL
+        welcome.gravity = Gravity.CENTER
+        welcome.setPadding(dp(16), 0, dp(16), dp(48))
 
-        pairCard = LinearLayout(this)
-        pairCard.orientation = LinearLayout.VERTICAL
-        pairCard.setPadding(dp(14), dp(12), dp(14), dp(8))
-        surface(pairCard, KIND_CARD, 16)
-        pairCard.addView(txt("Connect to your PC", 15f, 0, true))
-        pairCard.addView(status, statusParams)
-        pairCard.addView(
-            row(
-                btn("Discoverable", accent = true) { ensureBackend(); if (bleMode) hid.advertise() else makeDiscoverable() },
-                btn("Connect") { ensureBackend(); if (bleMode) hid.advertise() else pickDevice() }
-            )
+        val logo = ImageView(this)
+        logo.setImageResource(R.drawable.logo_mark)
+        logo.scaleType = ImageView.ScaleType.FIT_CENTER
+        welcome.addView(logo, lp(dp(96), dp(96)))
+
+        val title = txt("Connect to your PC", 20f, 0, true)
+        title.gravity = Gravity.CENTER
+        val titleParams = lp(MATCH, WRAP)
+        titleParams.topMargin = dp(28)
+        welcome.addView(title, titleParams)
+
+        status = txt(pairHint, 13f, 1)
+        status.gravity = Gravity.CENTER
+        status.setLineSpacing(0f, 1.15f)
+        val statusParams = lp(MATCH, WRAP)
+        statusParams.topMargin = dp(8)
+        statusParams.bottomMargin = dp(20)
+        statusParams.leftMargin = dp(12)
+        statusParams.rightMargin = dp(12)
+        welcome.addView(status, statusParams)
+
+        pairCard = row(
+            btn("Discoverable", accent = true) { ensureBackend(); if (bleMode) hid.advertise() else makeDiscoverable() },
+            btn("Connect") { ensureBackend(); if (bleMode) hid.advertise() else pickDevice() }
         )
-        val params = lp(MATCH, WRAP)
-        params.topMargin = dp(4)
-        content.addView(pairCard, params)
+        welcome.addView(pairCard, lp(MATCH, WRAP))
+
+        content.addView(welcome, lp(MATCH, 0, 1f))
     }
 
     private fun buildBottomPanel() {
@@ -740,17 +778,23 @@ class MainActivity : Activity() {
             closeDrawer()
             openSettings()
         })
-        drawer.addView(drawerItem(Ic.EXPAND, "Full-screen touchpad") {
+        fullDrawerItem = drawerItem(Ic.EXPAND, "Full-screen touchpad") {
             closeDrawer()
             setFullScreen(true)
-        })
+        }
+        drawer.addView(fullDrawerItem)
         drawer.addView(drawerItem(Ic.HELP, "How to connect") {
             closeDrawer()
             showHelp()
         })
 
         drawer.addView(View(this), lp(MATCH, 0, 1f))
-        val footer = txt("Version 1.0", 11f, 1)
+        val versionName = try {
+            packageManager.getPackageInfo(packageName, 0).versionName
+        } catch (e: Exception) {
+            ""
+        }
+        val footer = txt("Version $versionName", 11f, 1)
         footer.setPadding(dp(20), 0, dp(20), dp(18))
         drawer.addView(footer)
 
@@ -928,12 +972,8 @@ class MainActivity : Activity() {
 
     /** Full-screen mode hides every on-screen button so the touchpad fills the screen. */
     private fun setFullScreen(on: Boolean) {
-        fullScreen = on
-        val v = if (on) View.GONE else View.VISIBLE
-        topBar.visibility = v
-        bottomPanel.visibility = v
-        pairCard.visibility = if (on || linked) View.GONE else View.VISIBLE
-        fab.visibility = if (on) View.VISIBLE else View.GONE
+        fullScreen = on && linked
+        refreshLayout()
     }
 
     private fun showKeyboard() {

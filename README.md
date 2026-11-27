@@ -34,6 +34,11 @@ If Windows will not reconnect, remove the phone in Windows Bluetooth settings an
 - Ctrl / Alt / Shift / Win: tap to arm, then press the next key (e.g. Win then `d`).
 - Keyboard button: opens the phone keyboard and sends what you type. Also has Esc, Tab, Del, Backspace, Enter, Start, arrows, Home/End and media keys.
 
+## Main screen
+
+While not connected, only the logo and the "Connect to your PC" block are shown. The touchpad, buttons,
+keyboard button and full-screen controls (top bar and left drawer) appear once a PC is connected.
+
 ## Background connection
 
 The Bluetooth link is held by a foreground service, so it stays connected when the app is minimized
