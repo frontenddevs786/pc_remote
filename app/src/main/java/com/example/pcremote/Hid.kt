@@ -7,8 +7,14 @@ interface Hid {
     /** Called with true when a PC connects and false when it disconnects. */
     var connectionListener: ((Boolean) -> Unit)?
 
+    /** True while a PC is connected. */
+    val isConnected: Boolean
+
     fun start()
     fun stop()
+
+    /** Classic mode: try to reconnect to the last PC that was connected. */
+    fun reconnect() {}
 
     /** BLE mode: start advertising so the PC can find the phone. */
     fun advertise() {}

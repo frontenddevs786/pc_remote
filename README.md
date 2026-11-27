@@ -33,3 +33,11 @@ If Windows will not reconnect, remove the phone in Windows Bluetooth settings an
 - Drag toggle: holds the left button so you can select or drag windows.
 - Ctrl / Alt / Shift / Win: tap to arm, then press the next key (e.g. Win then `d`).
 - Keyboard button: opens the phone keyboard and sends what you type. Also has Esc, Tab, Del, Backspace, Enter, Start, arrows, Home/End and media keys.
+
+## Background connection
+
+The Bluetooth link is held by a foreground service, so it stays connected when the app is minimized
+or closed, and reopening the app reuses the existing connection. A "PC Remote" notification shows the
+state; tap its **Stop** button to disconnect and quit completely. In Classic mode the app also tries
+to reconnect to the last PC after the link drops. On some phones (vivo, Xiaomi, Oppo, Huawei) also set
+the app's battery usage to "Unrestricted" so the system does not kill it.

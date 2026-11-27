@@ -62,6 +62,7 @@ class BleHidController(
     }
 
     override var connectionListener: ((Boolean) -> Unit)? = null
+    override val isConnected: Boolean get() = host != null
     private var server: BluetoothGattServer? = null
     private var advertiser: BluetoothLeAdvertiser? = null
     @Volatile private var host: BluetoothDevice? = null

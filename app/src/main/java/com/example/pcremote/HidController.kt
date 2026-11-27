@@ -7,6 +7,8 @@ import android.bluetooth.BluetoothHidDeviceAppSdpSettings
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import java.util.concurrent.Executors
 
 /**
@@ -90,6 +92,8 @@ class HidController(
     }
 
     override var connectionListener: ((Boolean) -> Unit)? = null
+    private val prefs = context.getSharedPreferences("cfg", Context.MODE_PRIVATE)
+    private val handler = Handler(Looper.getMainLooper())
     private var hid: BluetoothHidDevice? = null
     @Volatile private var host: BluetoothDevice? = null
     private val executor = Executors.newSingleThreadExecutor()
@@ -109,7 +113,16 @@ class HidController(
         override fun onAppStatusChanged(pluggedDevice: BluetoothDevice?, registered: Boolean) {
             isRegistered = registered
             onStatus("App registered=$registered plugged=${pluggedDevice?.name}")
-            if (registered) onStatus("READY: now pair/connect from the PC")
+            if (registered) {
+                onStatus("READY: now pair/connect from the PC")
+                if (pluggedDevice != null) {
+                    // The system already has a live link (e.g. app was restarted): reuse it.
+                    host = pluggedDevice
+                    connectionListener?.invoke(true)
+                } else {
+                    handler.postDelayed({ reconnect() }, 1000)
+                }
+            }
         }
 
         override fun onConnectionStateChanged(device: BluetoothDevice, state: Int) {
@@ -117,11 +130,14 @@ class HidController(
             when (state) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     host = device
+                    prefs.edit().putString("last_host", device.address).apply()
                     connectionListener?.invoke(true)
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> if (host?.address == device.address) {
                     host = null
                     connectionListener?.invoke(false)
+                    // Unexpected drop (out of range, PC slept): try once to get the link back.
+                    handler.postDelayed({ reconnect() }, 2000)
                 }
             }
         }
@@ -153,6 +169,7 @@ class HidController(
 
         override fun onVirtualCableUnplug(device: BluetoothDevice) {
             onStatus("PC removed the virtual cable")
+            prefs.edit().remove("last_host").apply()
             host = null
             connectionListener?.invoke(false)
         }
@@ -198,6 +215,7 @@ class HidController(
     }
 
     override fun stop() {
+        handler.removeCallbacksAndMessages(null)
         try {
             hid?.unregisterApp()
             val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
@@ -223,7 +241,18 @@ class HidController(
         onStatus("connect(${device.name ?: device.address}) returned $ok")
     }
 
-    val isConnected: Boolean get() = host != null
+    override val isConnected: Boolean get() = host != null
+
+    /** Reconnect to the PC that was connected last time (if it is still paired). */
+    override fun reconnect() {
+        val h = hid ?: return
+        if (!isRegistered || host != null) return
+        val addr = prefs.getString("last_host", null) ?: return
+        val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter ?: return
+        val device = adapter.bondedDevices?.firstOrNull { it.address == addr } ?: return
+        val ok = h.connect(device)
+        onStatus("reconnect(${device.name ?: device.address}) returned $ok")
+    }
 
     private fun send(id: Int, data: ByteArray) {
         val h = host ?: return

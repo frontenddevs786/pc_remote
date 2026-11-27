@@ -80,7 +80,8 @@ class MainActivity : Activity() {
     private var pal = darkPalette
 
     // main views
-    private lateinit var hid: Hid
+    // The Bluetooth backend lives in HidHost (kept alive by HidService), not in this Activity.
+    private val hid: Hid get() = HidHost.backend ?: NoopHid
     private lateinit var frame: FrameLayout
     private lateinit var content: LinearLayout
     private lateinit var topBar: LinearLayout
@@ -149,8 +150,26 @@ class MainActivity : Activity() {
         themeMode = prefs.getInt("theme", 0)
         pal = currentPalette()
         buildUi()
-        hid = createBackend()
         startWhenPermitted()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // Re-attach to the backend that kept running in the background.
+        HidHost.uiConnection = { connected -> showConnected(connected) }
+        HidHost.uiStatus = { appendLog(it) }
+        if (HidHost.backend == null) {
+            if (hasBluetoothPermission()) launchBackend()
+        } else if (!HidHost.connected) {
+            hid.reconnect()
+        }
+        showConnected(HidHost.connected)
+    }
+
+    override fun onStop() {
+        HidHost.uiConnection = null
+        HidHost.uiStatus = null
+        super.onStop()
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -168,28 +187,22 @@ class MainActivity : Activity() {
         }
     }
 
-    override fun onDestroy() {
-        hid.stop()
-        super.onDestroy()
-    }
+    // The connection is deliberately NOT closed here: HidService keeps it alive in the background.
+    // Use the "Stop" button in the notification to disconnect and quit completely.
 
     // ---------- backend ----------
 
-    private fun createBackend(): Hid {
-        val h: Hid =
-            if (bleMode) BleHidController(this) { appendLog(it) } else HidController(this) { appendLog(it) }
-        h.connectionListener = { connected -> runOnUiThread { showConnected(connected) } }
-        return h
-    }
-
     private fun switchMode() {
-        hid.stop()
         bleMode = !bleMode
         prefs.edit().putBoolean("ble", bleMode).apply()
         status.text = pairHint
         showConnected(false)
-        hid = createBackend()
-        startWhenPermitted()
+        HidHost.switchMode(applicationContext, bleMode)
+    }
+
+    private fun launchBackend() {
+        HidService.start(this)
+        HidHost.ensure(applicationContext, bleMode)
     }
 
     private fun showConnected(connected: Boolean) {
@@ -222,22 +235,34 @@ class MainActivity : Activity() {
 
     // ---------- permissions ----------
 
+    private fun hasBluetoothPermission(): Boolean =
+        Build.VERSION.SDK_INT < 31 ||
+            listOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_ADVERTISE)
+                .all { checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
+
     private fun startWhenPermitted() {
+        val needed = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= 31) {
-            val needed = listOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_ADVERTISE)
-                .filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
-            if (needed.isNotEmpty()) {
-                requestPermissions(needed.toTypedArray(), 1)
-                return
-            }
+            listOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_ADVERTISE)
+                .filterTo(needed) { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
         }
-        hid.start()
+        // Lets the "PC Remote is running" notification show; the app works without it.
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            needed.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        if (needed.isNotEmpty()) {
+            requestPermissions(needed.toTypedArray(), 1)
+            return
+        }
+        launchBackend()
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
-            hid.start()
+        if (hasBluetoothPermission()) {
+            launchBackend()
         } else {
             status.text = "Bluetooth permission is required. Please allow it in app settings."
         }
@@ -552,8 +577,8 @@ class MainActivity : Activity() {
         pairCard.addView(status, statusParams)
         pairCard.addView(
             row(
-                btn("Discoverable", accent = true) { if (bleMode) hid.advertise() else makeDiscoverable() },
-                btn("Connect") { if (bleMode) hid.advertise() else pickDevice() }
+                btn("Discoverable", accent = true) { ensureBackend(); if (bleMode) hid.advertise() else makeDiscoverable() },
+                btn("Connect") { ensureBackend(); if (bleMode) hid.advertise() else pickDevice() }
             )
         )
         val params = lp(MATCH, WRAP)
@@ -930,6 +955,10 @@ class MainActivity : Activity() {
             )
             .setPositiveButton("OK", null)
             .show()
+    }
+
+    private fun ensureBackend() {
+        if (HidHost.backend == null && hasBluetoothPermission()) launchBackend()
     }
 
     private fun makeDiscoverable() {
