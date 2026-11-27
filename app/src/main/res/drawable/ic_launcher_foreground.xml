@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- touchpad body -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M38,32 L70,32 A8,8 0 0 1 78,40 L78,68 A8,8 0 0 1 70,76 L38,76 A8,8 0 0 1 30,68 L30,40 A8,8 0 0 1 38,32 Z" />
+    <!-- button dividers -->
+    <path
+        android:fillColor="#1E2A44"
+        android:pathData="M30,64 L78,64 L78,66 L30,66 Z" />
+    <path
+        android:fillColor="#1E2A44"
+        android:pathData="M53,66 L55,66 L55,76 L53,76 Z" />
+    <!-- cursor arrow -->
+    <path
+        android:fillColor="#2F6BFF"
+        android:pathData="M44,38 L44,58 L49,53 L53,62 L56.5,60.5 L52.5,51.5 L59,51 Z" />
+</vector>

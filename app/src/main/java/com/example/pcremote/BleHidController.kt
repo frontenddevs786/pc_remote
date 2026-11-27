@@ -61,6 +61,7 @@ class BleHidController(
         private val REPORT_REF = u(0x2908)
     }
 
+    override var connectionListener: ((Boolean) -> Unit)? = null
     private var server: BluetoothGattServer? = null
     private var advertiser: BluetoothLeAdvertiser? = null
     @Volatile private var host: BluetoothDevice? = null
@@ -262,6 +263,7 @@ class BleHidController(
             onStatus("${device.name ?: device.address}: $label (status $status)")
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 host = device
+                connectionListener?.invoke(true)
                 try {
                     advertiser?.stopAdvertising(advCallback)
                 } catch (e: Exception) {
@@ -272,6 +274,7 @@ class BleHidController(
                     host = null
                     subscribed.clear()
                     queue.clear()
+                    connectionListener?.invoke(false)
                 }
                 if (wantAdvertising && running) advertise()
             }

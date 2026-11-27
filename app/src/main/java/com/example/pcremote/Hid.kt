@@ -4,6 +4,9 @@ import android.bluetooth.BluetoothDevice
 
 /** Common interface for the two ways the phone can act as a Bluetooth keyboard/mouse. */
 interface Hid {
+    /** Called with true when a PC connects and false when it disconnects. */
+    var connectionListener: ((Boolean) -> Unit)?
+
     fun start()
     fun stop()
 

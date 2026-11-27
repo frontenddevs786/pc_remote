@@ -89,6 +89,7 @@ class HidController(
         }
     }
 
+    override var connectionListener: ((Boolean) -> Unit)? = null
     private var hid: BluetoothHidDevice? = null
     @Volatile private var host: BluetoothDevice? = null
     private val executor = Executors.newSingleThreadExecutor()
@@ -114,8 +115,14 @@ class HidController(
         override fun onConnectionStateChanged(device: BluetoothDevice, state: Int) {
             onStatus("${device.name ?: device.address}: ${stateName(state)}")
             when (state) {
-                BluetoothProfile.STATE_CONNECTED -> host = device
-                BluetoothProfile.STATE_DISCONNECTED -> if (host?.address == device.address) host = null
+                BluetoothProfile.STATE_CONNECTED -> {
+                    host = device
+                    connectionListener?.invoke(true)
+                }
+                BluetoothProfile.STATE_DISCONNECTED -> if (host?.address == device.address) {
+                    host = null
+                    connectionListener?.invoke(false)
+                }
             }
         }
 
@@ -147,6 +154,7 @@ class HidController(
         override fun onVirtualCableUnplug(device: BluetoothDevice) {
             onStatus("PC removed the virtual cable")
             host = null
+            connectionListener?.invoke(false)
         }
     }
 
