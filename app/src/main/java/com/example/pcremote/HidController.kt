@@ -131,7 +131,7 @@ class HidController(
             if (size > 0) {
                 hid?.replyReport(device, type, id, ByteArray(size))
             } else {
-                hid?.reportError(device, BluetoothHidDevice.ERROR_RSP_INVALID_REPORT_ID)
+                hid?.reportError(device, BluetoothHidDevice.ERROR_RSP_INVALID_RPT_ID)
             }
         }
 
