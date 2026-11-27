@@ -63,6 +63,7 @@ class BleHidController(
 
     override var connectionListener: ((Boolean) -> Unit)? = null
     override val isConnected: Boolean get() = host != null
+    private val prefs = context.getSharedPreferences("cfg", Context.MODE_PRIVATE)
     private var server: BluetoothGattServer? = null
     private var advertiser: BluetoothLeAdvertiser? = null
     @Volatile private var host: BluetoothDevice? = null
@@ -132,6 +133,7 @@ class BleHidController(
         if (s == null) {
             onStatus("BLE keyboard ready")
             advertise()
+            reconnect()      // call back the PC that was connected last time
             return
         }
         val ok = server?.addService(s) ?: false
@@ -264,6 +266,10 @@ class BleHidController(
             onStatus("${device.name ?: device.address}: $label (status $status)")
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 host = device
+                prefs.edit()
+                    .putString("ble_last_host", device.address)
+                    .putString("ble_last_host_name", device.name ?: device.address)
+                    .apply()
                 connectionListener?.invoke(true)
                 try {
                     advertiser?.stopAdvertising(advCallback)
@@ -276,8 +282,11 @@ class BleHidController(
                     subscribed.clear()
                     queue.clear()
                     connectionListener?.invoke(false)
+                    if (wantAdvertising && running) advertise()
+                    reconnect()      // unexpected drop: call the PC back
+                } else if (wantAdvertising && running && host == null) {
+                    advertise()
                 }
-                if (wantAdvertising && running) advertise()
             }
         }
 
@@ -334,6 +343,26 @@ class BleHidController(
         override fun onNotificationSent(device: BluetoothDevice, status: Int) {
             releaseSem()
         }
+    }
+
+    // ---------- reconnect to the remembered PC ----------
+
+    /**
+     * Asks the stack to reconnect to the PC that was connected last time. For a paired PC this makes the
+     * phone send connectable "directed" advertising, which Windows answers by itself, so the user does not
+     * have to press anything. Normal advertising keeps running in parallel.
+     */
+    override fun reconnect() {
+        if (!running || host != null) return
+        val addr = prefs.getString("ble_last_host", null) ?: return
+        val dev = manager.adapter?.bondedDevices?.firstOrNull { it.address == addr }
+        if (dev == null) {
+            // PC was removed from the phone's paired list: forget it.
+            prefs.edit().remove("ble_last_host").remove("ble_last_host_name").apply()
+            return
+        }
+        val ok = try { server?.connect(dev, true) ?: false } catch (e: Exception) { false }
+        if (ok) onStatus("Reconnecting to ${dev.name ?: addr}...")
     }
 
     // ---------- advertising ----------

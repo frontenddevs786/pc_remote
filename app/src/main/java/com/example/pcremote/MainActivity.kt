@@ -177,6 +177,19 @@ class MainActivity : Activity() {
             hid.reconnect()
         }
         showConnected(HidHost.connected)
+        showAutoReconnect()
+    }
+
+    /** If a PC was connected before, say so and show that the app is reconnecting by itself. */
+    private fun showAutoReconnect() {
+        if (HidHost.connected || connectBusy || discoverBusy) return
+        val name = prefs.getString(if (bleMode) "ble_last_host_name" else "last_host_name", null) ?: return
+        connectBusy = true
+        discoverBusy = false
+        refreshPairButtons()
+        status.text = "Reconnecting to $name... Make sure Bluetooth is on at your PC."
+        uiHandler.removeCallbacksAndMessages(null)
+        uiHandler.postDelayed({ clearPairBusy() }, 45_000)
     }
 
     override fun onStop() {

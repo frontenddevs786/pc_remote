@@ -130,7 +130,10 @@ class HidController(
             when (state) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     host = device
-                    prefs.edit().putString("last_host", device.address).apply()
+                    prefs.edit()
+                        .putString("last_host", device.address)
+                        .putString("last_host_name", device.name ?: device.address)
+                        .apply()
                     connectionListener?.invoke(true)
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> if (host?.address == device.address) {
@@ -169,7 +172,7 @@ class HidController(
 
         override fun onVirtualCableUnplug(device: BluetoothDevice) {
             onStatus("PC removed the virtual cable")
-            prefs.edit().remove("last_host").apply()
+            prefs.edit().remove("last_host").remove("last_host_name").apply()
             host = null
             connectionListener?.invoke(false)
         }
