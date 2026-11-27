@@ -20,6 +20,7 @@ object Ic {
     const val KEYBOARD = 5
     const val HELP = 6
     const val TOUCHPAD = 7
+    const val FILES = 8
 }
 
 /**
@@ -111,6 +112,13 @@ class IconDrawable(
                 canvas.drawCircle(12f, 12f, 9f, p)
                 textPaint.color = color
                 canvas.drawText("?", 12f, 16.6f, textPaint)
+            }
+            Ic.FILES -> {
+                // two arrows: send (right) and receive (left)
+                poly(canvas, 4f, 8f, 20f, 8f)
+                poly(canvas, 16f, 4f, 20f, 8f, 16f, 12f)
+                poly(canvas, 20f, 16f, 4f, 16f)
+                poly(canvas, 8f, 12f, 4f, 16f, 8f, 20f)
             }
             Ic.TOUCHPAD -> {
                 canvas.drawRoundRect(RectF(3.5f, 4.5f, 20.5f, 19.5f), 3.5f, 3.5f, p)

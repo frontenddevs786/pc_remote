@@ -46,3 +46,13 @@ or closed, and reopening the app reuses the existing connection. A "PC Remote" n
 state; tap its **Stop** button to disconnect and quit completely. In Classic mode the app also tries
 to reconnect to the last PC after the link drops. On some phones (vivo, Xiaomi, Oppo, Huawei) also set
 the app's battery usage to "Unrestricted" so the system does not kill it.
+
+## Send & Receive Files
+
+Open the drawer and tap **Send & Receive Files**. Files use Bluetooth File Transfer (Object Push), which
+Windows supports without extra software. It is a separate channel from the keyboard/mouse link.
+
+- **Send:** on Windows choose Settings > Bluetooth & devices > Devices > Send or receive files via
+  Bluetooth > Receive files. In the app choose files, tap Send and pick the PC.
+- **Receive:** on Windows choose Send files, pick the phone and files, accept on the phone, then tap
+  Open received files in the app.

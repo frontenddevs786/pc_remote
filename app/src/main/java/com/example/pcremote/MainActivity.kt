@@ -6,11 +6,13 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
+import android.content.ClipData
 import android.content.Intent
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.provider.OpenableColumns
 import android.provider.Settings
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
@@ -41,6 +43,7 @@ import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.Switch
 import android.widget.TextView
+import android.widget.Toast
 
 private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
 private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
@@ -114,6 +117,12 @@ class MainActivity : Activity() {
 
     // settings page
     private lateinit var settingsPage: LinearLayout
+
+    // files page
+    private lateinit var filesPage: LinearLayout
+    private lateinit var filesSummary: TextView
+    private lateinit var sendFilesBtn: Button
+    private val pickedFiles = mutableListOf<Uri>()
     private lateinit var speedValue: TextView
     private lateinit var speedSeek: SeekBar
     private lateinit var accelSwitch: Switch
@@ -235,6 +244,7 @@ class MainActivity : Activity() {
     @Suppress("DEPRECATION")
     override fun onBackPressed() {
         when {
+            filesPage.visibility == View.VISIBLE -> closeFiles()
             settingsPage.visibility == View.VISIBLE -> closeSettings()
             drawerOpen -> closeDrawer()
             fullScreen -> setFullScreen(false)
@@ -698,6 +708,7 @@ class MainActivity : Activity() {
         frame.addView(fab, fabParams)
 
         buildSettingsPage()
+        buildFilesPage()
         buildDrawer()
 
         setContentView(frame)
@@ -933,6 +944,10 @@ class MainActivity : Activity() {
             setFullScreen(true)
         }
         drawer.addView(fullDrawerItem)
+        drawer.addView(drawerItem(Ic.FILES, "Send & Receive Files") {
+            closeDrawer()
+            openFiles()
+        })
         drawer.addView(drawerItem(Ic.TUNE, "Keep running in background") {
             closeDrawer()
             requestBackgroundAccess()
@@ -1118,6 +1133,232 @@ class MainActivity : Activity() {
         frame.addView(settingsPage, FrameLayout.LayoutParams(MATCH, MATCH))
     }
 
+    // ---------- send & receive files ----------
+
+    private fun buildFilesPage() {
+        filesPage = LinearLayout(this)
+        filesPage.orientation = LinearLayout.VERTICAL
+        filesPage.isClickable = true
+        filesPage.visibility = View.GONE
+        filesPage.setPadding(dp(12), dp(4), dp(12), dp(12))
+        surface(filesPage, KIND_BG, 0)
+
+        val bar = LinearLayout(this)
+        bar.orientation = LinearLayout.HORIZONTAL
+        bar.gravity = Gravity.CENTER_VERTICAL
+        bar.addView(iconBtn(Ic.BACK) { closeFiles() }, lp(dp(44), dp(44)))
+        val titleParams = lp(WRAP, WRAP)
+        titleParams.leftMargin = dp(8)
+        bar.addView(txt("Send & Receive Files", 18f, 0, true), titleParams)
+        filesPage.addView(bar, lp(MATCH, dp(56)))
+
+        val list = LinearLayout(this)
+        list.orientation = LinearLayout.VERTICAL
+        val scroll = ScrollView(this)
+        scroll.isVerticalScrollBarEnabled = false
+        scroll.addView(list)
+        filesPage.addView(scroll, lp(MATCH, 0, 1f))
+
+        fun addCard(c: View) {
+            val p = lp(MATCH, WRAP)
+            p.topMargin = dp(12)
+            list.addView(c, p)
+        }
+        fun body(text: String, topDp: Int): TextView {
+            val t = txt(text, 13f, 1)
+            t.setLineSpacing(0f, 1.15f)
+            t.layoutParams = lp(MATCH, WRAP).apply { topMargin = dp(topDp) }
+            return t
+        }
+
+        // --- Send ---
+        filesSummary = txt("No files selected", 13f, 0)
+        filesSummary.layoutParams = lp(MATCH, WRAP).apply { topMargin = dp(12) }
+        sendFilesBtn = btn("Send", accent = true) { sendPickedFiles() }
+        val sendRow = row(btn("Choose files") { pickFiles() }, sendFilesBtn)
+        val sendCard = card(txt("SEND TO PC", 12f, 3, true))
+        sendCard.addView(
+            body(
+                "1. On Windows open Settings > Bluetooth & devices > Devices > Send or receive files via " +
+                    "Bluetooth, then choose Receive files.\n2. Choose files here, tap Send and pick your PC.",
+                10
+            )
+        )
+        sendCard.addView(filesSummary)
+        sendCard.addView(sendRow, lp(MATCH, WRAP).apply { topMargin = dp(8) })
+        addCard(sendCard)
+
+        // --- Receive ---
+        val recvCard = card(txt("RECEIVE FROM PC", 12f, 3, true))
+        recvCard.addView(
+            body(
+                "1. If your PC does not see this phone, tap Make discoverable.\n" +
+                    "2. On Windows open Send or receive files via Bluetooth > Send files, pick this phone and the files.\n" +
+                    "3. Accept the transfer on the phone, then tap Open received files.",
+                10
+            )
+        )
+        recvCard.addView(
+            row(
+                btn("Open received files", accent = true) { openReceivedFiles() },
+                btn("Make discoverable") { makePhoneDiscoverable() }
+            ),
+            lp(MATCH, WRAP).apply { topMargin = dp(12) }
+        )
+        addCard(recvCard)
+
+        // --- Note ---
+        val noteCard = card(txt("GOOD TO KNOW", 12f, 3, true))
+        noteCard.addView(
+            body(
+                "Files travel over Bluetooth File Transfer, a separate Bluetooth channel from the keyboard and " +
+                    "mouse link, so those keep working. The first time, the phone and PC may ask you to pair " +
+                    "again for file transfer: accept on both.",
+                10
+            )
+        )
+        noteCard.addView(
+            btn("Phone Bluetooth settings") {
+                try {
+                    startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
+                } catch (e: Exception) {
+                    Toast.makeText(this, "Could not open Bluetooth settings", Toast.LENGTH_SHORT).show()
+                }
+            },
+            lp(MATCH, WRAP).apply { topMargin = dp(12) }
+        )
+        addCard(noteCard)
+
+        frame.addView(filesPage, FrameLayout.LayoutParams(MATCH, MATCH))
+        refreshFilesUi()
+    }
+
+    private fun openFiles() {
+        filesPage.alpha = 0f
+        filesPage.visibility = View.VISIBLE
+        filesPage.animate().alpha(1f).setDuration(160).start()
+    }
+
+    private fun closeFiles() {
+        filesPage.visibility = View.GONE
+    }
+
+    private fun pickFiles() {
+        val i = Intent(Intent.ACTION_OPEN_DOCUMENT)
+            .addCategory(Intent.CATEGORY_OPENABLE)
+            .setType("*/*")
+            .putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+        try {
+            @Suppress("DEPRECATION")
+            startActivityForResult(i, 3)
+        } catch (e: Exception) {
+            Toast.makeText(this, "No file picker found on this phone", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun onFilesPicked(resultCode: Int, data: Intent?) {
+        if (resultCode != RESULT_OK || data == null) return
+        val uris = mutableListOf<Uri>()
+        val clip = data.clipData
+        if (clip != null) {
+            for (i in 0 until clip.itemCount) clip.getItemAt(i).uri?.let { uris.add(it) }
+        } else {
+            data.data?.let { uris.add(it) }
+        }
+        pickedFiles.clear()
+        pickedFiles.addAll(uris)
+        refreshFilesUi()
+    }
+
+    private fun describeFile(uri: Uri): String {
+        var name = uri.lastPathSegment ?: "file"
+        var size = -1L
+        try {
+            contentResolver.query(uri, null, null, null, null)?.use { c ->
+                if (c.moveToFirst()) {
+                    val ni = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    val si = c.getColumnIndex(OpenableColumns.SIZE)
+                    if (ni >= 0 && !c.isNull(ni)) name = c.getString(ni)
+                    if (si >= 0 && !c.isNull(si)) size = c.getLong(si)
+                }
+            }
+        } catch (e: Exception) {
+            // keep the fallback name
+        }
+        return if (size >= 0) "$name  (${formatSize(size)})" else name
+    }
+
+    private fun formatSize(b: Long): String = when {
+        b < 1024 -> "$b B"
+        b < 1024 * 1024 -> "${b / 1024} KB"
+        b < 1024L * 1024 * 1024 -> String.format("%.1f MB", b / 1048576.0)
+        else -> String.format("%.2f GB", b / 1073741824.0)
+    }
+
+    private fun refreshFilesUi() {
+        val n = pickedFiles.size
+        filesSummary.text = when (n) {
+            0 -> "No files selected"
+            else -> {
+                val lines = pickedFiles.take(5).joinToString("\n") { describeFile(it) }
+                val more = if (n > 5) "\n+ ${n - 5} more" else ""
+                (if (n == 1) "1 file selected\n" else "$n files selected\n") + lines + more
+            }
+        }
+        sendFilesBtn.isEnabled = n > 0
+        sendFilesBtn.alpha = if (n > 0) 1f else 0.5f
+    }
+
+    /** Hands the chosen files to Android's own Bluetooth sharing, which lets you pick the PC. */
+    private fun sendPickedFiles() {
+        if (pickedFiles.isEmpty()) return
+        val intent = if (pickedFiles.size == 1) {
+            Intent(Intent.ACTION_SEND).putExtra(Intent.EXTRA_STREAM, pickedFiles[0])
+        } else {
+            Intent(Intent.ACTION_SEND_MULTIPLE)
+                .putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(pickedFiles))
+        }
+        intent.type = "*/*"
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        val clip = ClipData.newUri(contentResolver, "files", pickedFiles[0])
+        for (i in 1 until pickedFiles.size) clip.addItem(ClipData.Item(pickedFiles[i]))
+        intent.clipData = clip
+        try {
+            intent.setPackage("com.android.bluetooth")
+            startActivity(intent)
+        } catch (e: Exception) {
+            try {
+                intent.setPackage(null)
+                startActivity(Intent.createChooser(intent, "Send via Bluetooth"))
+            } catch (e2: Exception) {
+                Toast.makeText(this, "Could not open Bluetooth sharing", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun openReceivedFiles() {
+        try {
+            startActivity(Intent("android.btopp.intent.action.OPEN_RECEIVED_FILES"))
+        } catch (e: Exception) {
+            try {
+                startActivity(Intent(android.app.DownloadManager.ACTION_VIEW_DOWNLOADS))
+            } catch (e2: Exception) {
+                Toast.makeText(this, "Open your Files app and look in Downloads > Bluetooth", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun makePhoneDiscoverable() {
+        try {
+            startActivity(
+                Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE)
+                    .putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 120)
+            )
+        } catch (e: Exception) {
+            Toast.makeText(this, "Could not make the phone discoverable", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun updateSpeedLabel() {
         speedValue.text = "%.1fx".format(sensitivity)
     }
@@ -1215,6 +1456,10 @@ class MainActivity : Activity() {
     @Suppress("DEPRECATION")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 3) {
+            onFilesPicked(resultCode, data)
+            return
+        }
         if (requestCode != 2) return
         if (resultCode == RESULT_CANCELED) {
             clearPairBusy()
