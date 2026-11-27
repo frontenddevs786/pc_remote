@@ -16,6 +16,8 @@ import android.bluetooth.le.AdvertiseSettings
 import android.bluetooth.le.BluetoothLeAdvertiser
 import android.content.Context
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelUuid
 import java.util.LinkedList
 import java.util.UUID
@@ -64,6 +66,7 @@ class BleHidController(
     override var connectionListener: ((Boolean) -> Unit)? = null
     override val isConnected: Boolean get() = host != null
     private val prefs = context.getSharedPreferences("cfg", Context.MODE_PRIVATE)
+    private val handler = Handler(Looper.getMainLooper())
     private var server: BluetoothGattServer? = null
     private var advertiser: BluetoothLeAdvertiser? = null
     @Volatile private var host: BluetoothDevice? = null
@@ -105,12 +108,21 @@ class BleHidController(
         pendingServices.clear()
         pendingServices.addAll(buildServices())
         running = true
+        try {
+            val paired = adapter.bondedDevices?.joinToString { "${it.name ?: "?"} ${it.address}" }
+            onStatus("Paired devices: ${paired ?: "none"}; remembered PC: ${prefs.getString("ble_last_host_name", "none")}")
+        } catch (e: Exception) {
+            // ignore
+        }
         startWorker()
         addNextService()
+        handler.removeCallbacks(watchdog)
+        handler.postDelayed(watchdog, 30_000)
     }
 
     override fun stop() {
         running = false
+        handler.removeCallbacksAndMessages(null)
         wantAdvertising = false
         try {
             advertiser?.stopAdvertising(advCallback)
@@ -348,21 +360,26 @@ class BleHidController(
     // ---------- reconnect to the remembered PC ----------
 
     /**
-     * Asks the stack to reconnect to the PC that was connected last time. For a paired PC this makes the
-     * phone send connectable "directed" advertising, which Windows answers by itself, so the user does not
-     * have to press anything. Normal advertising keeps running in parallel.
+     * In BLE mode the PC (the "central") opens the connection, so all the phone can do is stay
+     * visible. Windows reconnects to a paired device by itself when it sees it advertising.
      */
     override fun reconnect() {
         if (!running || host != null) return
-        val addr = prefs.getString("ble_last_host", null) ?: return
-        val dev = manager.adapter?.bondedDevices?.firstOrNull { it.address == addr }
-        if (dev == null) {
-            // PC was removed from the phone's paired list: forget it.
-            prefs.edit().remove("ble_last_host").remove("ble_last_host_name").apply()
-            return
+        val name = prefs.getString("ble_last_host_name", null)
+        if (name != null) onStatus("Waiting for $name to reconnect...")
+        advertise()
+    }
+
+    /** Re-starts advertising now and then, in case the system silently stopped it. */
+    private val watchdog = object : Runnable {
+        override fun run() {
+            if (!running) return
+            if (host == null && wantAdvertising) {
+                onStatus("(re-advertising)")
+                advertise()
+            }
+            handler.postDelayed(this, 30_000)
         }
-        val ok = try { server?.connect(dev, true) ?: false } catch (e: Exception) { false }
-        if (ok) onStatus("Reconnecting to ${dev.name ?: addr}...")
     }
 
     // ---------- advertising ----------

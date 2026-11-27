@@ -51,6 +51,8 @@ class HidService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        HidHost.attach(applicationContext)
+        HidHost.log("Service onCreate")
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL, "PC connection", NotificationManager.IMPORTANCE_LOW)
@@ -60,6 +62,7 @@ class HidService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        HidHost.log("Service onStartCommand action=${intent?.action} (null intent = restarted by system)")
         if (intent?.action == ACTION_STOP) {
             HidHost.shutdown()
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -89,6 +92,7 @@ class HidService : Service() {
 
     // Swiping the app away from recents must not stop the link; keep the notification and backend.
     override fun onTaskRemoved(rootIntent: Intent?) {
+        HidHost.log("Service onTaskRemoved (app swiped away)")
         if (hasBluetoothPermission()) {
             refreshNotification()
             startBackendIfAllowed()
@@ -97,6 +101,7 @@ class HidService : Service() {
     }
 
     override fun onDestroy() {
+        HidHost.log("Service onDestroy")
         HidHost.notifyService = null
         try {
             unregisterReceiver(btReceiver)

@@ -156,6 +156,8 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        HidHost.attach(applicationContext)
+        HidHost.log("Activity onCreate")
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         bleMode = prefs.getBoolean("ble", true)
         sensitivity = prefs.getFloat("speed", 1.8f)
@@ -168,6 +170,7 @@ class MainActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
+        HidHost.log("Activity onStart (backend running: ${HidHost.backend != null}, connected: ${HidHost.connected})")
         // Re-attach to the backend that kept running in the background.
         HidHost.uiConnection = { connected -> showConnected(connected) }
         HidHost.uiStatus = { appendLog(it) }
@@ -187,12 +190,22 @@ class MainActivity : Activity() {
         connectBusy = true
         discoverBusy = false
         refreshPairButtons()
-        status.text = "Reconnecting to $name... Make sure Bluetooth is on at your PC."
+        status.text = if (bleMode) {
+            "Waiting for $name to reconnect... If it does not, on Windows open Settings > Bluetooth & devices, click this phone and choose Connect."
+        } else {
+            "Reconnecting to $name... Make sure Bluetooth is on at your PC."
+        }
         uiHandler.removeCallbacksAndMessages(null)
         uiHandler.postDelayed({ clearPairBusy() }, 45_000)
     }
 
+    override fun onDestroy() {
+        HidHost.log("Activity onDestroy (finishing=$isFinishing)")
+        super.onDestroy()
+    }
+
     override fun onStop() {
+        HidHost.log("Activity onStop")
         HidHost.uiConnection = null
         HidHost.uiStatus = null
         super.onStop()
@@ -278,7 +291,7 @@ class MainActivity : Activity() {
     private fun appendLog(msg: String) {
         val problem = listOf("cannot", "could not", "failed", "turn bluetooth", "not ready", "not support", "not registered")
             .any { msg.contains(it, ignoreCase = true) }
-        val progress = listOf("Visible to the PC", "Connecting to", "Reconnecting to")
+        val progress = listOf("Visible to the PC", "Connecting to", "Reconnecting to", "Waiting for")
             .any { msg.startsWith(it) }
         if (problem) {
             runOnUiThread {
@@ -908,6 +921,10 @@ class MainActivity : Activity() {
             closeDrawer()
             requestBackgroundAccess()
         })
+        drawer.addView(drawerItem(Ic.TUNE, "Connection log") {
+            closeDrawer()
+            showLog()
+        })
         drawer.addView(drawerItem(Ic.HELP, "How to connect") {
             closeDrawer()
             showHelp()
@@ -1106,6 +1123,30 @@ class MainActivity : Activity() {
         val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
         resetInput()
         imm.showSoftInput(input, InputMethodManager.SHOW_FORCED)
+    }
+
+    private fun showLog() {
+        val tv = TextView(this)
+        tv.typeface = Typeface.MONOSPACE
+        tv.textSize = 10f
+        tv.setTextColor(colorFor(0))
+        tv.setPadding(dp(16), dp(8), dp(16), dp(8))
+        tv.setTextIsSelectable(true)
+        val text = HidHost.readLog().takeLast(20_000)
+        tv.text = if (text.isBlank()) "(empty)" else text
+        val sv = ScrollView(this)
+        sv.addView(tv)
+        dialogBuilder()
+            .setTitle("Connection log")
+            .setView(sv)
+            .setPositiveButton("Copy") { _, _ ->
+                val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("PC Remote log", text))
+            }
+            .setNeutralButton("Clear") { _, _ -> HidHost.clearLog() }
+            .setNegativeButton("Close", null)
+            .show()
+        sv.post { sv.fullScroll(View.FOCUS_DOWN) }
     }
 
     private fun showHelp() {
