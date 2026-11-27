@@ -72,6 +72,8 @@ class BleHidController(
     @Volatile private var host: BluetoothDevice? = null
     @Volatile private var running = false
     @Volatile private var wantAdvertising = false
+    @Volatile private var advertising = false
+    private var lastDirectConnect = 0L
 
     private val subscribed = java.util.Collections.synchronizedSet(HashSet<Int>())
     private val pendingServices = LinkedList<BluetoothGattService>()
@@ -124,6 +126,7 @@ class BleHidController(
         running = false
         handler.removeCallbacksAndMessages(null)
         wantAdvertising = false
+        advertising = false
         try {
             advertiser?.stopAdvertising(advCallback)
         } catch (e: Exception) {
@@ -283,6 +286,7 @@ class BleHidController(
                     .putString("ble_last_host_name", device.name ?: device.address)
                     .apply()
                 connectionListener?.invoke(true)
+                advertising = false
                 try {
                     advertiser?.stopAdvertising(advCallback)
                 } catch (e: Exception) {
@@ -294,8 +298,8 @@ class BleHidController(
                     subscribed.clear()
                     queue.clear()
                     connectionListener?.invoke(false)
-                    if (wantAdvertising && running) advertise()
-                    reconnect()      // unexpected drop: call the PC back
+                    lastDirectConnect = 0L
+                    reconnect()      // advertise again and call the PC back
                 } else if (wantAdvertising && running && host == null) {
                     advertise()
                 }
@@ -367,7 +371,31 @@ class BleHidController(
         if (!running || host != null) return
         val name = prefs.getString("ble_last_host_name", null)
         if (name != null) onStatus("Waiting for $name to reconnect...")
-        advertise()
+        wantAdvertising = true
+        if (!advertising) advertise()      // do not restart advertising while a PC may be mid-connect
+        connectToRememberedHost()
+    }
+
+    /**
+     * Besides advertising, ask the Bluetooth stack to connect to the remembered PC as soon as it is
+     * available (background / auto-connect). This is what lets a bonded keyboard come back by itself.
+     */
+    private fun connectToRememberedHost() {
+        val addr = prefs.getString("ble_last_host", null) ?: return
+        val now = System.currentTimeMillis()
+        if (now - lastDirectConnect < 10_000) return
+        lastDirectConnect = now
+        try {
+            val dev = manager.adapter?.bondedDevices?.firstOrNull { it.address == addr }
+            if (dev == null) {
+                onStatus("Remembered PC is no longer paired. Pair it again from the PC.")
+                prefs.edit().remove("ble_last_host").remove("ble_last_host_name").apply()
+                return
+            }
+            server?.connect(dev, true)
+        } catch (e: Exception) {
+            // Not supported on this phone: advertising alone still lets the PC reconnect.
+        }
     }
 
     /** Re-starts advertising now and then, in case the system silently stopped it. */
@@ -375,10 +403,10 @@ class BleHidController(
         override fun run() {
             if (!running) return
             if (host == null && wantAdvertising) {
-                onStatus("(re-advertising)")
-                advertise()
+                advertise()          // the system can silently stop advertising, so renew it now and then
+                connectToRememberedHost()
             }
-            handler.postDelayed(this, 30_000)
+            handler.postDelayed(this, 60_000)
         }
     }
 
@@ -386,12 +414,18 @@ class BleHidController(
 
     private val advCallback = object : AdvertiseCallback() {
         override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
+            advertising = true
             val name = try { manager.adapter?.name } catch (e: Exception) { null }
             onStatus("Visible to the PC. On Windows: Add device > Bluetooth > pick '${name ?: "this phone"}'")
         }
 
         override fun onStartFailure(errorCode: Int) {
-            if (errorCode != ADVERTISE_FAILED_ALREADY_STARTED) onStatus("Advertising failed, code $errorCode")
+            if (errorCode == ADVERTISE_FAILED_ALREADY_STARTED) {
+                advertising = true
+            } else {
+                advertising = false
+                onStatus("Advertising failed, code $errorCode")
+            }
         }
     }
 

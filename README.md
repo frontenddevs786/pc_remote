@@ -41,20 +41,18 @@ keyboard button and full-screen controls (top bar and left drawer) appear once a
 
 ## Background connection
 
-The Bluetooth link is held by a foreground service, so it stays connected when the app is minimized
-or closed, and reopening the app reuses the existing connection. A "PC Remote" notification shows the
-state; tap its **Stop** button to disconnect and quit completely. In Classic mode the app also tries
-to reconnect to the last PC after the link drops. On some phones (vivo, Xiaomi, Oppo, Huawei) also set
-the app's battery usage to "Unrestricted" so the system does not kill it.
+The Bluetooth link is held by a foreground service, so it stays connected when the app is minimized or
+swiped out of the recent apps list. The app is shown in recent apps like any other app. A "PC Remote"
+notification shows the state; tap its **Stop** button to disconnect and quit completely.
 
-## Send & Receive Files
+If a phone's vendor kills the app anyway, the service is restarted automatically (sticky restart plus a
+backup alarm), and it also starts again after the phone reboots (unless you pressed Stop). On some phones
+(vivo, Xiaomi, Oppo, Huawei) also set the app's battery usage to "Unrestricted" and enable Auto-start.
 
-Open the drawer and tap **Send & Receive Files**. Files use Bluetooth Object Push, which Windows supports
-without extra software. It is a separate, short-lived link to the already paired PC, not the keyboard/mouse
-link, so no new pairing is needed.
+## Reconnecting
 
-- **Send:** on Windows choose Settings > Bluetooth & devices > Devices > Send or receive files via
-  Bluetooth > Receive files and leave the window waiting. In the app choose files and tap Send. The app
-  sends them itself (with progress and error messages). "Use Android Bluetooth share instead" is a fallback.
-- **Receive:** on Windows choose Send files, pick the phone and files, accept on the phone, then tap
-  Open received files in the app (received by Android's own Bluetooth service).
+Pair once; after that the phone behaves like a Bluetooth headset. In Classic mode the app keeps retrying
+the last PC in the background (every 5 s, then every 30 s) and reconnects as soon as the PC's Bluetooth link
+appears. In Bluetooth LE mode the phone keeps advertising and asks the Bluetooth stack to auto-connect to
+the remembered PC. Tap **Connect** to retry immediately (Classic: long-press it to choose another PC).
+Only if you remove the pairing on either side do you need to pair again.

@@ -122,6 +122,8 @@ class HidController(
                 } else {
                     handler.postDelayed({ reconnect() }, 1000)
                 }
+            } else {
+                handler.removeCallbacks(retry)
             }
         }
 
@@ -129,6 +131,8 @@ class HidController(
             onStatus("${device.name ?: device.address}: ${stateName(state)}")
             when (state) {
                 BluetoothProfile.STATE_CONNECTED -> {
+                    handler.removeCallbacks(retry)
+                    attempts = 0
                     host = device
                     prefs.edit()
                         .putString("last_host", device.address)
@@ -139,8 +143,10 @@ class HidController(
                 BluetoothProfile.STATE_DISCONNECTED -> if (host?.address == device.address) {
                     host = null
                     connectionListener?.invoke(false)
-                    // Unexpected drop (out of range, PC slept): try once to get the link back.
-                    handler.postDelayed({ reconnect() }, 2000)
+                    // Drop (out of range, PC slept, PC restarted): keep trying to get the link back,
+                    // like a Bluetooth headset does. The PC may also reconnect by itself first.
+                    attempts = 0
+                    scheduleReconnect(2_000)
                 }
             }
         }
@@ -173,6 +179,7 @@ class HidController(
         override fun onVirtualCableUnplug(device: BluetoothDevice) {
             onStatus("PC removed the virtual cable")
             prefs.edit().remove("last_host").remove("last_host_name").apply()
+            handler.removeCallbacks(retry)
             host = null
             connectionListener?.invoke(false)
         }
@@ -247,15 +254,51 @@ class HidController(
 
     override val isConnected: Boolean get() = host != null
 
-    /** Reconnect to the PC that was connected last time (if it is still paired). */
+    private var attempts = 0
+    private val retry = Runnable { attemptReconnect() }
+
+    private fun scheduleReconnect(delayMs: Long) {
+        handler.removeCallbacks(retry)
+        handler.postDelayed(retry, delayMs)
+    }
+
+    /**
+     * Reconnect to the PC that was connected last time (if it is still paired). Keeps retrying in the
+     * background (every 5 s at first, then every 30 s) until the link is up, so the PC is picked up
+     * again whenever it wakes up or comes back into range, with no tapping needed.
+     */
     override fun reconnect() {
+        attempts = 0
+        attemptReconnect()
+    }
+
+    private fun attemptReconnect() {
         val h = hid ?: return
         if (!isRegistered || host != null) return
         val addr = prefs.getString("last_host", null) ?: return
         val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter ?: return
-        val device = adapter.bondedDevices?.firstOrNull { it.address == addr } ?: return
-        val ok = h.connect(device)
-        if (ok) onStatus("Reconnecting to ${device.name ?: device.address}...")
+        if (!adapter.isEnabled) return
+        val device = adapter.bondedDevices?.firstOrNull { it.address == addr }
+        if (device == null) {
+            // The PC was un-paired on the phone: nothing to reconnect to until it is paired again.
+            onStatus("Remembered PC is no longer paired. Pair it again from the PC.")
+            prefs.edit().remove("last_host").remove("last_host_name").apply()
+            return
+        }
+        when (h.getConnectionState(device)) {
+            BluetoothProfile.STATE_CONNECTED -> {
+                host = device
+                connectionListener?.invoke(true)
+                return
+            }
+            BluetoothProfile.STATE_CONNECTING -> {}
+            else -> {
+                attempts++
+                if (attempts == 1) onStatus("Reconnecting to ${device.name ?: device.address}...")
+                h.connect(device)
+            }
+        }
+        scheduleReconnect(if (attempts < 12) 5_000L else 30_000L)
     }
 
     private fun send(id: Int, data: ByteArray) {

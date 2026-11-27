@@ -7,13 +7,11 @@ import android.app.AlertDialog
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
-import android.content.ClipData
 import android.content.Intent
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
-import android.provider.OpenableColumns
 import android.provider.Settings
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
@@ -39,7 +37,6 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
-import android.widget.ProgressBar
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
@@ -120,22 +117,9 @@ class MainActivity : Activity() {
     // settings page
     private lateinit var settingsPage: LinearLayout
 
-    // files page
-    private lateinit var filesPage: LinearLayout
-    private lateinit var filesSummary: TextView
-    private lateinit var sendFilesBtn: Button
-    private lateinit var chooseFilesBtn: Button
-    private lateinit var cancelSendBtn: Button
-    private lateinit var transferStatus: TextView
-    private lateinit var transferProgress: ProgressBar
-    @Volatile private var transferring = false
-    @Volatile private var transferCancelled = false
-    private var transferClient: ObexPush? = null
-    private val pickedFiles = mutableListOf<Uri>()
     private lateinit var speedValue: TextView
     private lateinit var speedSeek: SeekBar
     private lateinit var accelSwitch: Switch
-    private lateinit var recentsSwitch: Switch
 
     // state
     private var bleMode = true
@@ -184,26 +168,26 @@ class MainActivity : Activity() {
         themeMode = prefs.getInt("theme", 0)
         pal = currentPalette()
         buildUi()
-        applyRecentsPolicy()
+        showInRecents()
         startWhenPermitted()
     }
 
     /**
-     * Some phones (vivo, Xiaomi, ...) kill the whole app when its card is swiped away in the recent-apps
-     * list, which drops the PC connection. Hiding the app from that list means there is no card to swipe.
+     * The app must show up in the recent-apps list like any normal app. Older versions hid it, and
+     * that flag is remembered by the task, so clear it explicitly.
      */
-    private fun applyRecentsPolicy() {
+    private fun showInRecents() {
         try {
             val am = getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
-            am.appTasks.firstOrNull()?.setExcludeFromRecents(prefs.getBoolean("hide_recents", true))
+            am.appTasks.forEach { it.setExcludeFromRecents(false) }
         } catch (e: Exception) {
             HidHost.log("setExcludeFromRecents failed: $e")
         }
+        prefs.edit().remove("hide_recents").apply()
     }
 
     override fun onStart() {
         super.onStart()
-        applyRecentsPolicy()
         HidHost.log("Activity onStart (backend running: ${HidHost.backend != null}, connected: ${HidHost.connected})")
         // Re-attach to the backend that kept running in the background.
         HidHost.uiConnection = { connected -> showConnected(connected) }
@@ -253,7 +237,6 @@ class MainActivity : Activity() {
     @Suppress("DEPRECATION")
     override fun onBackPressed() {
         when {
-            filesPage.visibility == View.VISIBLE -> closeFiles()
             settingsPage.visibility == View.VISIBLE -> closeSettings()
             drawerOpen -> closeDrawer()
             fullScreen -> setFullScreen(false)
@@ -381,6 +364,15 @@ class MainActivity : Activity() {
             hid.advertise()
             uiHandler.removeCallbacksAndMessages(null)
             uiHandler.postDelayed({ clearPairBusy() }, 60_000)
+        } else if (prefs.getString("last_host", null) != null) {
+            // Same as a Bluetooth headset: reuse the pairing that already exists. Long-press to pick another PC.
+            connectBusy = true
+            discoverBusy = false
+            refreshPairButtons()
+            status.text = "Connecting to ${prefs.getString("last_host_name", "your PC")}... Long-press Connect to pick another PC."
+            hid.reconnect()
+            uiHandler.removeCallbacksAndMessages(null)
+            uiHandler.postDelayed({ clearPairBusy() }, 30_000)
         } else {
             pickDevice()
         }
@@ -554,10 +546,6 @@ class MainActivity : Activity() {
         accelSwitch.thumbTintList = ColorStateList(checked, intArrayOf(pal.accent, pal.textDim))
         val trackColors = intArrayOf((pal.accent and 0x00FFFFFF) or 0x66000000, (pal.textDim and 0x00FFFFFF) or 0x55000000)
         accelSwitch.trackTintList = ColorStateList(checked, trackColors)
-        transferProgress.progressTintList = ColorStateList.valueOf(pal.accent)
-        transferProgress.indeterminateTintList = ColorStateList.valueOf(pal.accent)
-        recentsSwitch.thumbTintList = ColorStateList(checked, intArrayOf(pal.accent, pal.textDim))
-        recentsSwitch.trackTintList = ColorStateList(checked, trackColors)
 
         window.statusBarColor = pal.bg
         window.navigationBarColor = pal.bg
@@ -719,7 +707,6 @@ class MainActivity : Activity() {
         frame.addView(fab, fabParams)
 
         buildSettingsPage()
-        buildFilesPage()
         buildDrawer()
 
         setContentView(frame)
@@ -790,6 +777,11 @@ class MainActivity : Activity() {
 
         discoverBtn = btn("Discoverable", accent = true) { onDiscoverable() }
         connectBtn = btn("Connect") { onConnect() }
+        connectBtn.setOnLongClickListener {
+            // Classic mode: choose a different paired PC instead of the remembered one.
+            if (!bleMode) pickDevice()
+            !bleMode
+        }
         pairCard = row(discoverBtn, connectBtn)
         welcome.addView(pairCard, lp(MATCH, WRAP))
 
@@ -955,10 +947,6 @@ class MainActivity : Activity() {
             setFullScreen(true)
         }
         drawer.addView(fullDrawerItem)
-        drawer.addView(drawerItem(Ic.FILES, "Send & Receive Files") {
-            closeDrawer()
-            openFiles()
-        })
         drawer.addView(drawerItem(Ic.TUNE, "Keep running in background") {
             closeDrawer()
             requestBackgroundAccess()
@@ -1117,407 +1105,9 @@ class MainActivity : Activity() {
             txt("Use Bluetooth LE unless your phone supports classic Bluetooth keyboards. Changing this restarts pairing.", 12f, 1),
             lp(MATCH, WRAP).apply { topMargin = dp(8) }
         )
-        recentsSwitch = Switch(this)
-        recentsSwitch.isChecked = prefs.getBoolean("hide_recents", true)
-        recentsSwitch.setOnCheckedChangeListener { _, checked ->
-            prefs.edit().putBoolean("hide_recents", checked).apply()
-            applyRecentsPolicy()
-        }
-        val recentsText = LinearLayout(this)
-        recentsText.orientation = LinearLayout.VERTICAL
-        recentsText.addView(txt("Stay connected when closed", 15f, 0))
-        recentsText.addView(
-            txt(
-                "Hides the app from the recent apps list so swiping it away cannot disconnect your PC. " +
-                    "Open it again from the launcher or the notification.",
-                12f, 1
-            )
-        )
-        val recentsRow = LinearLayout(this)
-        recentsRow.orientation = LinearLayout.HORIZONTAL
-        recentsRow.gravity = Gravity.CENTER_VERTICAL
-        recentsRow.addView(recentsText, lp(0, WRAP, 1f))
-        recentsRow.addView(recentsSwitch)
-        connCard.addView(recentsRow, lp(MATCH, WRAP).apply { topMargin = dp(16) })
         addCard(connCard)
 
         frame.addView(settingsPage, FrameLayout.LayoutParams(MATCH, MATCH))
-    }
-
-    // ---------- send & receive files ----------
-
-    private fun buildFilesPage() {
-        filesPage = LinearLayout(this)
-        filesPage.orientation = LinearLayout.VERTICAL
-        filesPage.isClickable = true
-        filesPage.visibility = View.GONE
-        filesPage.setPadding(dp(12), dp(4), dp(12), dp(12))
-        surface(filesPage, KIND_BG, 0)
-
-        val bar = LinearLayout(this)
-        bar.orientation = LinearLayout.HORIZONTAL
-        bar.gravity = Gravity.CENTER_VERTICAL
-        bar.addView(iconBtn(Ic.BACK) { closeFiles() }, lp(dp(44), dp(44)))
-        val titleParams = lp(WRAP, WRAP)
-        titleParams.leftMargin = dp(8)
-        bar.addView(txt("Send & Receive Files", 18f, 0, true), titleParams)
-        filesPage.addView(bar, lp(MATCH, dp(56)))
-
-        val list = LinearLayout(this)
-        list.orientation = LinearLayout.VERTICAL
-        val scroll = ScrollView(this)
-        scroll.isVerticalScrollBarEnabled = false
-        scroll.addView(list)
-        filesPage.addView(scroll, lp(MATCH, 0, 1f))
-
-        fun addCard(c: View) {
-            val p = lp(MATCH, WRAP)
-            p.topMargin = dp(12)
-            list.addView(c, p)
-        }
-        fun body(text: String, topDp: Int): TextView {
-            val t = txt(text, 13f, 1)
-            t.setLineSpacing(0f, 1.15f)
-            t.layoutParams = lp(MATCH, WRAP).apply { topMargin = dp(topDp) }
-            return t
-        }
-
-        // --- Send ---
-        filesSummary = txt("No files selected", 13f, 0)
-        filesSummary.layoutParams = lp(MATCH, WRAP).apply { topMargin = dp(12) }
-        chooseFilesBtn = btn("Choose files") { pickFiles() }
-        sendFilesBtn = btn("Send", accent = true) { sendPickedFiles() }
-        val sendRow = row(chooseFilesBtn, sendFilesBtn)
-        val sendCard = card(txt("SEND TO PC", 12f, 3, true))
-        sendCard.addView(
-            body(
-                "1. On Windows open Settings > Bluetooth & devices > Devices > Send or receive files via " +
-                    "Bluetooth, choose Receive files and leave that window waiting.\n" +
-                    "2. Choose files here and tap Send. They go straight to your paired PC.",
-                10
-            )
-        )
-        sendCard.addView(filesSummary)
-        sendCard.addView(sendRow, lp(MATCH, WRAP).apply { topMargin = dp(8) })
-
-        transferProgress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal)
-        transferProgress.max = 1000
-        transferProgress.visibility = View.GONE
-        sendCard.addView(transferProgress, lp(MATCH, dp(10)).apply { topMargin = dp(12) })
-
-        transferStatus = txt("", 13f, 0)
-        transferStatus.visibility = View.GONE
-        transferStatus.setLineSpacing(0f, 1.15f)
-        sendCard.addView(transferStatus, lp(MATCH, WRAP).apply { topMargin = dp(8) })
-
-        cancelSendBtn = btn("Cancel") { cancelTransfer() }
-        cancelSendBtn.visibility = View.GONE
-        sendCard.addView(cancelSendBtn, lp(MATCH, WRAP).apply { topMargin = dp(4) })
-
-        sendCard.addView(
-            btn("Use Android Bluetooth share instead") { sendViaSystemShare() },
-            lp(MATCH, WRAP).apply { topMargin = dp(4) }
-        )
-        addCard(sendCard)
-
-        // --- Receive ---
-        val recvCard = card(txt("RECEIVE FROM PC", 12f, 3, true))
-        recvCard.addView(
-            body(
-                "1. If your PC does not see this phone, tap Make discoverable.\n" +
-                    "2. On Windows open Send or receive files via Bluetooth > Send files, pick this phone and the files.\n" +
-                    "3. Accept the transfer on the phone, then tap Open received files.",
-                10
-            )
-        )
-        recvCard.addView(
-            row(
-                btn("Open received files", accent = true) { openReceivedFiles() },
-                btn("Make discoverable") { makePhoneDiscoverable() }
-            ),
-            lp(MATCH, WRAP).apply { topMargin = dp(12) }
-        )
-        addCard(recvCard)
-
-        // --- Note ---
-        val noteCard = card(txt("GOOD TO KNOW", 12f, 3, true))
-        noteCard.addView(
-            body(
-                "Files travel over Bluetooth File Transfer, a separate Bluetooth channel from the keyboard and " +
-                    "mouse link, so those keep working. The first time, the phone and PC may ask you to pair " +
-                    "again for file transfer: accept on both.",
-                10
-            )
-        )
-        noteCard.addView(
-            btn("Phone Bluetooth settings") {
-                try {
-                    startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
-                } catch (e: Exception) {
-                    Toast.makeText(this, "Could not open Bluetooth settings", Toast.LENGTH_SHORT).show()
-                }
-            },
-            lp(MATCH, WRAP).apply { topMargin = dp(12) }
-        )
-        addCard(noteCard)
-
-        frame.addView(filesPage, FrameLayout.LayoutParams(MATCH, MATCH))
-        refreshFilesUi()
-    }
-
-    private fun openFiles() {
-        filesPage.alpha = 0f
-        filesPage.visibility = View.VISIBLE
-        filesPage.animate().alpha(1f).setDuration(160).start()
-    }
-
-    private fun closeFiles() {
-        filesPage.visibility = View.GONE
-    }
-
-    private fun pickFiles() {
-        val i = Intent(Intent.ACTION_OPEN_DOCUMENT)
-            .addCategory(Intent.CATEGORY_OPENABLE)
-            .setType("*/*")
-            .putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
-        try {
-            @Suppress("DEPRECATION")
-            startActivityForResult(i, 3)
-        } catch (e: Exception) {
-            Toast.makeText(this, "No file picker found on this phone", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    private fun onFilesPicked(resultCode: Int, data: Intent?) {
-        if (resultCode != RESULT_OK || data == null) return
-        val uris = mutableListOf<Uri>()
-        val clip = data.clipData
-        if (clip != null) {
-            for (i in 0 until clip.itemCount) clip.getItemAt(i).uri?.let { uris.add(it) }
-        } else {
-            data.data?.let { uris.add(it) }
-        }
-        pickedFiles.clear()
-        pickedFiles.addAll(uris)
-        refreshFilesUi()
-    }
-
-    private fun describeFile(uri: Uri): String {
-        var name = uri.lastPathSegment ?: "file"
-        var size = -1L
-        try {
-            contentResolver.query(uri, null, null, null, null)?.use { c ->
-                if (c.moveToFirst()) {
-                    val ni = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    val si = c.getColumnIndex(OpenableColumns.SIZE)
-                    if (ni >= 0 && !c.isNull(ni)) name = c.getString(ni)
-                    if (si >= 0 && !c.isNull(si)) size = c.getLong(si)
-                }
-            }
-        } catch (e: Exception) {
-            // keep the fallback name
-        }
-        return if (size >= 0) "$name  (${formatSize(size)})" else name
-    }
-
-    private fun formatSize(b: Long): String = when {
-        b < 1024 -> "$b B"
-        b < 1024 * 1024 -> "${b / 1024} KB"
-        b < 1024L * 1024 * 1024 -> String.format("%.1f MB", b / 1048576.0)
-        else -> String.format("%.2f GB", b / 1073741824.0)
-    }
-
-    private fun refreshFilesUi() {
-        val n = pickedFiles.size
-        filesSummary.text = when (n) {
-            0 -> "No files selected"
-            else -> {
-                val lines = pickedFiles.take(5).joinToString("\n") { describeFile(it) }
-                val more = if (n > 5) "\n+ ${n - 5} more" else ""
-                (if (n == 1) "1 file selected\n" else "$n files selected\n") + lines + more
-            }
-        }
-        val canSend = n > 0 && !transferring
-        sendFilesBtn.isEnabled = canSend
-        sendFilesBtn.alpha = if (canSend) 1f else 0.5f
-        chooseFilesBtn.isEnabled = !transferring
-        chooseFilesBtn.alpha = if (transferring) 0.5f else 1f
-        cancelSendBtn.visibility = if (transferring) View.VISIBLE else View.GONE
-        transferProgress.visibility = if (transferring) View.VISIBLE else View.GONE
-    }
-
-    private fun nameAndSize(uri: Uri): Pair<String, Long> {
-        var name = uri.lastPathSegment ?: "file"
-        var size = -1L
-        try {
-            contentResolver.query(uri, null, null, null, null)?.use { c ->
-                if (c.moveToFirst()) {
-                    val ni = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    val si = c.getColumnIndex(OpenableColumns.SIZE)
-                    if (ni >= 0 && !c.isNull(ni)) name = c.getString(ni)
-                    if (si >= 0 && !c.isNull(si)) size = c.getLong(si)
-                }
-            }
-        } catch (e: Exception) {
-            // keep fallbacks
-        }
-        return name to size
-    }
-
-    private fun setTransferStatus(text: String) {
-        runOnUiThread {
-            transferStatus.text = text
-            transferStatus.visibility = View.VISIBLE
-        }
-    }
-
-    /** Sends the chosen files straight to the paired PC over Bluetooth Object Push. */
-    private fun sendPickedFiles() {
-        if (pickedFiles.isEmpty() || transferring) return
-        if (!hasBluetoothPermission()) {
-            Toast.makeText(this, "Bluetooth permission is required", Toast.LENGTH_LONG).show()
-            return
-        }
-        val adapter = (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter
-        if (adapter == null || !adapter.isEnabled) {
-            Toast.makeText(this, "Turn Bluetooth on first", Toast.LENGTH_LONG).show()
-            return
-        }
-        val bonded = adapter.bondedDevices?.toList().orEmpty()
-        if (bonded.isEmpty()) {
-            setTransferStatus("No paired devices. Pair this phone with your PC first.")
-            return
-        }
-        val computers = bonded.filter {
-            it.bluetoothClass?.majorDeviceClass == android.bluetooth.BluetoothClass.Device.Major.COMPUTER
-        }
-        if (computers.size == 1) {
-            startTransfer(computers[0])
-        } else {
-            val list = computers + bonded.filterNot { it in computers }
-            dialogBuilder()
-                .setTitle("Send to")
-                .setItems(list.map { it.name ?: it.address }.toTypedArray()) { _, i -> startTransfer(list[i]) }
-                .show()
-        }
-    }
-
-    private fun startTransfer(device: BluetoothDevice) {
-        val files = pickedFiles.toList()
-        val pcName = device.name ?: device.address
-        transferring = true
-        transferCancelled = false
-        transferProgress.isIndeterminate = true
-        refreshFilesUi()
-        setTransferStatus("Connecting to $pcName... Windows must be waiting in Receive files.")
-        HidHost.log("File send: connecting to $pcName (${files.size} file(s))")
-
-        Thread {
-            val client = ObexPush(device)
-            transferClient = client
-            var opened = false
-            try {
-                val infos = files.map { nameAndSize(it) }
-                val total = if (infos.all { it.second >= 0 }) infos.sumOf { it.second } else -1L
-                client.open()
-                opened = true
-                HidHost.log("File send: link open")
-                var done = 0L
-                files.forEachIndexed { idx, uri ->
-                    val (name, size) = infos[idx]
-                    setTransferStatus("Sending ${idx + 1} of ${files.size}: $name")
-                    val ins = contentResolver.openInputStream(uri) ?: throw java.io.IOException("Cannot read $name")
-                    ins.use {
-                        client.put(name, size, it) { sent ->
-                            runOnUiThread {
-                                if (total > 0) {
-                                    transferProgress.isIndeterminate = false
-                                    transferProgress.progress = (((done + sent) * 1000) / total).toInt()
-                                }
-                            }
-                        }
-                    }
-                    done += maxOf(size, 0L)
-                }
-                HidHost.log("File send: done")
-                setTransferStatus(
-                    if (files.size == 1) "Sent 1 file to $pcName." else "Sent ${files.size} files to $pcName."
-                )
-            } catch (e: Exception) {
-                HidHost.log("File send failed (linkOpen=$opened): $e")
-                setTransferStatus(
-                    when {
-                        transferCancelled -> "Cancelled."
-                        !opened ->
-                            "Could not connect to $pcName for file transfer. On Windows open Settings > Bluetooth & " +
-                                "devices > Devices > Send or receive files via Bluetooth > Receive files, leave that " +
-                                "window waiting, then try again.\n(${e.message})"
-                        e is ObexPush.PushException -> e.message ?: "The PC refused the file."
-                        else -> "Transfer failed: ${e.message}"
-                    }
-                )
-            } finally {
-                client.close()
-                transferClient = null
-                transferring = false
-                runOnUiThread { refreshFilesUi() }
-            }
-        }.start()
-    }
-
-    private fun cancelTransfer() {
-        transferCancelled = true
-        transferClient?.cancel()
-    }
-
-    /** Fallback: hands the chosen files to Android's own Bluetooth sharing, which lets you pick the PC. */
-    private fun sendViaSystemShare() {
-        if (pickedFiles.isEmpty()) return
-        val intent = if (pickedFiles.size == 1) {
-            Intent(Intent.ACTION_SEND).putExtra(Intent.EXTRA_STREAM, pickedFiles[0])
-        } else {
-            Intent(Intent.ACTION_SEND_MULTIPLE)
-                .putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(pickedFiles))
-        }
-        intent.type = "*/*"
-        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        val clip = ClipData.newUri(contentResolver, "files", pickedFiles[0])
-        for (i in 1 until pickedFiles.size) clip.addItem(ClipData.Item(pickedFiles[i]))
-        intent.clipData = clip
-        try {
-            intent.setPackage("com.android.bluetooth")
-            startActivity(intent)
-        } catch (e: Exception) {
-            try {
-                intent.setPackage(null)
-                startActivity(Intent.createChooser(intent, "Send via Bluetooth"))
-            } catch (e2: Exception) {
-                Toast.makeText(this, "Could not open Bluetooth sharing", Toast.LENGTH_LONG).show()
-            }
-        }
-    }
-
-    private fun openReceivedFiles() {
-        try {
-            startActivity(Intent("android.btopp.intent.action.OPEN_RECEIVED_FILES"))
-        } catch (e: Exception) {
-            try {
-                startActivity(Intent(android.app.DownloadManager.ACTION_VIEW_DOWNLOADS))
-            } catch (e2: Exception) {
-                Toast.makeText(this, "Open your Files app and look in Downloads > Bluetooth", Toast.LENGTH_LONG).show()
-            }
-        }
-    }
-
-    private fun makePhoneDiscoverable() {
-        try {
-            startActivity(
-                Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE)
-                    .putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 120)
-            )
-        } catch (e: Exception) {
-            Toast.makeText(this, "Could not make the phone discoverable", Toast.LENGTH_SHORT).show()
-        }
     }
 
     private fun updateSpeedLabel() {
@@ -1617,10 +1207,6 @@ class MainActivity : Activity() {
     @Suppress("DEPRECATION")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == 3) {
-            onFilesPicked(resultCode, data)
-            return
-        }
         if (requestCode != 2) return
         if (resultCode == RESULT_CANCELED) {
             clearPairBusy()
