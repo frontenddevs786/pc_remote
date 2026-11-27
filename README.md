@@ -49,10 +49,12 @@ the app's battery usage to "Unrestricted" so the system does not kill it.
 
 ## Send & Receive Files
 
-Open the drawer and tap **Send & Receive Files**. Files use Bluetooth File Transfer (Object Push), which
-Windows supports without extra software. It is a separate channel from the keyboard/mouse link.
+Open the drawer and tap **Send & Receive Files**. Files use Bluetooth Object Push, which Windows supports
+without extra software. It is a separate, short-lived link to the already paired PC, not the keyboard/mouse
+link, so no new pairing is needed.
 
 - **Send:** on Windows choose Settings > Bluetooth & devices > Devices > Send or receive files via
-  Bluetooth > Receive files. In the app choose files, tap Send and pick the PC.
+  Bluetooth > Receive files and leave the window waiting. In the app choose files and tap Send. The app
+  sends them itself (with progress and error messages). "Use Android Bluetooth share instead" is a fallback.
 - **Receive:** on Windows choose Send files, pick the phone and files, accept on the phone, then tap
-  Open received files in the app.
+  Open received files in the app (received by Android's own Bluetooth service).

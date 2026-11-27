@@ -5,6 +5,7 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.AlertDialog
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.content.ClipData
 import android.content.Intent
@@ -38,6 +39,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
+import android.widget.ProgressBar
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
@@ -122,6 +124,13 @@ class MainActivity : Activity() {
     private lateinit var filesPage: LinearLayout
     private lateinit var filesSummary: TextView
     private lateinit var sendFilesBtn: Button
+    private lateinit var chooseFilesBtn: Button
+    private lateinit var cancelSendBtn: Button
+    private lateinit var transferStatus: TextView
+    private lateinit var transferProgress: ProgressBar
+    @Volatile private var transferring = false
+    @Volatile private var transferCancelled = false
+    private var transferClient: ObexPush? = null
     private val pickedFiles = mutableListOf<Uri>()
     private lateinit var speedValue: TextView
     private lateinit var speedSeek: SeekBar
@@ -545,6 +554,8 @@ class MainActivity : Activity() {
         accelSwitch.thumbTintList = ColorStateList(checked, intArrayOf(pal.accent, pal.textDim))
         val trackColors = intArrayOf((pal.accent and 0x00FFFFFF) or 0x66000000, (pal.textDim and 0x00FFFFFF) or 0x55000000)
         accelSwitch.trackTintList = ColorStateList(checked, trackColors)
+        transferProgress.progressTintList = ColorStateList.valueOf(pal.accent)
+        transferProgress.indeterminateTintList = ColorStateList.valueOf(pal.accent)
         recentsSwitch.thumbTintList = ColorStateList(checked, intArrayOf(pal.accent, pal.textDim))
         recentsSwitch.trackTintList = ColorStateList(checked, trackColors)
 
@@ -1174,18 +1185,39 @@ class MainActivity : Activity() {
         // --- Send ---
         filesSummary = txt("No files selected", 13f, 0)
         filesSummary.layoutParams = lp(MATCH, WRAP).apply { topMargin = dp(12) }
+        chooseFilesBtn = btn("Choose files") { pickFiles() }
         sendFilesBtn = btn("Send", accent = true) { sendPickedFiles() }
-        val sendRow = row(btn("Choose files") { pickFiles() }, sendFilesBtn)
+        val sendRow = row(chooseFilesBtn, sendFilesBtn)
         val sendCard = card(txt("SEND TO PC", 12f, 3, true))
         sendCard.addView(
             body(
                 "1. On Windows open Settings > Bluetooth & devices > Devices > Send or receive files via " +
-                    "Bluetooth, then choose Receive files.\n2. Choose files here, tap Send and pick your PC.",
+                    "Bluetooth, choose Receive files and leave that window waiting.\n" +
+                    "2. Choose files here and tap Send. They go straight to your paired PC.",
                 10
             )
         )
         sendCard.addView(filesSummary)
         sendCard.addView(sendRow, lp(MATCH, WRAP).apply { topMargin = dp(8) })
+
+        transferProgress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal)
+        transferProgress.max = 1000
+        transferProgress.visibility = View.GONE
+        sendCard.addView(transferProgress, lp(MATCH, dp(10)).apply { topMargin = dp(12) })
+
+        transferStatus = txt("", 13f, 0)
+        transferStatus.visibility = View.GONE
+        transferStatus.setLineSpacing(0f, 1.15f)
+        sendCard.addView(transferStatus, lp(MATCH, WRAP).apply { topMargin = dp(8) })
+
+        cancelSendBtn = btn("Cancel") { cancelTransfer() }
+        cancelSendBtn.visibility = View.GONE
+        sendCard.addView(cancelSendBtn, lp(MATCH, WRAP).apply { topMargin = dp(4) })
+
+        sendCard.addView(
+            btn("Use Android Bluetooth share instead") { sendViaSystemShare() },
+            lp(MATCH, WRAP).apply { topMargin = dp(4) }
+        )
         addCard(sendCard)
 
         // --- Receive ---
@@ -1305,12 +1337,141 @@ class MainActivity : Activity() {
                 (if (n == 1) "1 file selected\n" else "$n files selected\n") + lines + more
             }
         }
-        sendFilesBtn.isEnabled = n > 0
-        sendFilesBtn.alpha = if (n > 0) 1f else 0.5f
+        val canSend = n > 0 && !transferring
+        sendFilesBtn.isEnabled = canSend
+        sendFilesBtn.alpha = if (canSend) 1f else 0.5f
+        chooseFilesBtn.isEnabled = !transferring
+        chooseFilesBtn.alpha = if (transferring) 0.5f else 1f
+        cancelSendBtn.visibility = if (transferring) View.VISIBLE else View.GONE
+        transferProgress.visibility = if (transferring) View.VISIBLE else View.GONE
     }
 
-    /** Hands the chosen files to Android's own Bluetooth sharing, which lets you pick the PC. */
+    private fun nameAndSize(uri: Uri): Pair<String, Long> {
+        var name = uri.lastPathSegment ?: "file"
+        var size = -1L
+        try {
+            contentResolver.query(uri, null, null, null, null)?.use { c ->
+                if (c.moveToFirst()) {
+                    val ni = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    val si = c.getColumnIndex(OpenableColumns.SIZE)
+                    if (ni >= 0 && !c.isNull(ni)) name = c.getString(ni)
+                    if (si >= 0 && !c.isNull(si)) size = c.getLong(si)
+                }
+            }
+        } catch (e: Exception) {
+            // keep fallbacks
+        }
+        return name to size
+    }
+
+    private fun setTransferStatus(text: String) {
+        runOnUiThread {
+            transferStatus.text = text
+            transferStatus.visibility = View.VISIBLE
+        }
+    }
+
+    /** Sends the chosen files straight to the paired PC over Bluetooth Object Push. */
     private fun sendPickedFiles() {
+        if (pickedFiles.isEmpty() || transferring) return
+        if (!hasBluetoothPermission()) {
+            Toast.makeText(this, "Bluetooth permission is required", Toast.LENGTH_LONG).show()
+            return
+        }
+        val adapter = (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter
+        if (adapter == null || !adapter.isEnabled) {
+            Toast.makeText(this, "Turn Bluetooth on first", Toast.LENGTH_LONG).show()
+            return
+        }
+        val bonded = adapter.bondedDevices?.toList().orEmpty()
+        if (bonded.isEmpty()) {
+            setTransferStatus("No paired devices. Pair this phone with your PC first.")
+            return
+        }
+        val computers = bonded.filter {
+            it.bluetoothClass?.majorDeviceClass == android.bluetooth.BluetoothClass.Device.Major.COMPUTER
+        }
+        if (computers.size == 1) {
+            startTransfer(computers[0])
+        } else {
+            val list = computers + bonded.filterNot { it in computers }
+            dialogBuilder()
+                .setTitle("Send to")
+                .setItems(list.map { it.name ?: it.address }.toTypedArray()) { _, i -> startTransfer(list[i]) }
+                .show()
+        }
+    }
+
+    private fun startTransfer(device: BluetoothDevice) {
+        val files = pickedFiles.toList()
+        val pcName = device.name ?: device.address
+        transferring = true
+        transferCancelled = false
+        transferProgress.isIndeterminate = true
+        refreshFilesUi()
+        setTransferStatus("Connecting to $pcName... Windows must be waiting in Receive files.")
+        HidHost.log("File send: connecting to $pcName (${files.size} file(s))")
+
+        Thread {
+            val client = ObexPush(device)
+            transferClient = client
+            var opened = false
+            try {
+                val infos = files.map { nameAndSize(it) }
+                val total = if (infos.all { it.second >= 0 }) infos.sumOf { it.second } else -1L
+                client.open()
+                opened = true
+                HidHost.log("File send: link open")
+                var done = 0L
+                files.forEachIndexed { idx, uri ->
+                    val (name, size) = infos[idx]
+                    setTransferStatus("Sending ${idx + 1} of ${files.size}: $name")
+                    val ins = contentResolver.openInputStream(uri) ?: throw java.io.IOException("Cannot read $name")
+                    ins.use {
+                        client.put(name, size, it) { sent ->
+                            runOnUiThread {
+                                if (total > 0) {
+                                    transferProgress.isIndeterminate = false
+                                    transferProgress.progress = (((done + sent) * 1000) / total).toInt()
+                                }
+                            }
+                        }
+                    }
+                    done += maxOf(size, 0L)
+                }
+                HidHost.log("File send: done")
+                setTransferStatus(
+                    if (files.size == 1) "Sent 1 file to $pcName." else "Sent ${files.size} files to $pcName."
+                )
+            } catch (e: Exception) {
+                HidHost.log("File send failed (linkOpen=$opened): $e")
+                setTransferStatus(
+                    when {
+                        transferCancelled -> "Cancelled."
+                        !opened ->
+                            "Could not connect to $pcName for file transfer. On Windows open Settings > Bluetooth & " +
+                                "devices > Devices > Send or receive files via Bluetooth > Receive files, leave that " +
+                                "window waiting, then try again.\n(${e.message})"
+                        e is ObexPush.PushException -> e.message ?: "The PC refused the file."
+                        else -> "Transfer failed: ${e.message}"
+                    }
+                )
+            } finally {
+                client.close()
+                transferClient = null
+                transferring = false
+                runOnUiThread { refreshFilesUi() }
+            }
+        }.start()
+    }
+
+    private fun cancelTransfer() {
+        transferCancelled = true
+        transferClient?.cancel()
+    }
+
+    /** Fallback: hands the chosen files to Android's own Bluetooth sharing, which lets you pick the PC. */
+    private fun sendViaSystemShare() {
         if (pickedFiles.isEmpty()) return
         val intent = if (pickedFiles.size == 1) {
             Intent(Intent.ACTION_SEND).putExtra(Intent.EXTRA_STREAM, pickedFiles[0])
