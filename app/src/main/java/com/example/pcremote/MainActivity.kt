@@ -29,7 +29,9 @@ import android.widget.TextView
 @SuppressLint("MissingPermission")
 class MainActivity : Activity() {
 
-    private lateinit var hid: HidController
+    private lateinit var hid: Hid
+    private lateinit var modeBtn: Button
+    private var bleMode = true
     private lateinit var status: TextView
     private lateinit var input: EditText
     private lateinit var dragBtn: Button
@@ -40,6 +42,20 @@ class MainActivity : Activity() {
     private val modButtons = mutableMapOf<Int, Button>()
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+    private fun createBackend(): Hid =
+        if (bleMode) BleHidController(this) { appendLog(it) } else HidController(this) { appendLog(it) }
+
+    private fun switchMode() {
+        hid.stop()
+        bleMode = !bleMode
+        getSharedPreferences("cfg", MODE_PRIVATE).edit().putBoolean("ble", bleMode).apply()
+        modeBtn.text = if (bleMode) "Mode: BLE" else "Mode: Classic"
+        logLines.clear()
+        appendLog(if (bleMode) "Switched to BLE mode" else "Switched to Classic mode")
+        hid = createBackend()
+        startWhenPermitted()
+    }
 
     private val logLines = ArrayDeque<String>()
 
@@ -54,8 +70,9 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        bleMode = getSharedPreferences("cfg", MODE_PRIVATE).getBoolean("ble", true)
         buildUi()
-        hid = HidController(this) { msg -> appendLog(msg) }
+        hid = createBackend()
         startWhenPermitted()
     }
 
@@ -159,9 +176,10 @@ class MainActivity : Activity() {
 
         root.addView(
             row(
-                btn("Discoverable") { makeDiscoverable() },
-                btn("Connect") { pickDevice() },
-                btn("Keyboard") { showKeyboard() }
+                btn("Discoverable") { if (bleMode) hid.advertise() else makeDiscoverable() },
+                btn("Connect") { if (bleMode) hid.advertise() else pickDevice() },
+                btn("Keyboard") { showKeyboard() },
+                btn(if (bleMode) "Mode: BLE" else "Mode: Classic") { switchMode() }.also { modeBtn = it }
             )
         )
 

@@ -17,7 +17,7 @@ import java.util.concurrent.Executors
 class HidController(
     private val context: Context,
     private val onStatus: (String) -> Unit
-) {
+) : Hid {
     companion object {
         const val ID_KEYBOARD = 1
         const val ID_MOUSE = 2
@@ -29,7 +29,7 @@ class HidController(
         const val MOD_WIN = 0x08
 
         // HID report descriptor: keyboard (id 1), mouse (id 2), consumer/media keys (id 3)
-        private val DESCRIPTOR: ByteArray = intArrayOf(
+        internal val DESCRIPTOR: ByteArray = intArrayOf(
             // ---- Keyboard ----
             0x05, 0x01, 0x09, 0x06, 0xA1, 0x01, 0x85, 0x01,
             0x05, 0x07, 0x19, 0xE0, 0x29, 0xE7, 0x15, 0x00, 0x25, 0x01,
@@ -173,7 +173,7 @@ class HidController(
         }
     }
 
-    fun start() {
+    override fun start() {
         val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
         if (adapter == null) {
             onStatus("This device has no Bluetooth")
@@ -189,7 +189,7 @@ class HidController(
         if (!ok) onStatus("This phone does not support the Bluetooth HID device profile")
     }
 
-    fun stop() {
+    override fun stop() {
         try {
             hid?.unregisterApp()
             val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
@@ -201,7 +201,7 @@ class HidController(
         host = null
     }
 
-    fun connectTo(device: BluetoothDevice) {
+    override fun connectTo(device: BluetoothDevice) {
         val h = hid
         if (h == null) {
             onStatus("Not ready: HID service not connected yet")
@@ -222,7 +222,7 @@ class HidController(
         hid?.sendReport(h, id, data)
     }
 
-    fun mouse(dx: Int, dy: Int, buttons: Int = 0, wheel: Int = 0) {
+    override fun mouse(dx: Int, dy: Int, buttons: Int, wheel: Int) {
         send(
             ID_MOUSE,
             byteArrayOf(
@@ -235,19 +235,19 @@ class HidController(
     }
 
     /** Press and release one key (usage 0 = modifier-only, e.g. the Windows key). */
-    fun press(usage: Int, modifiers: Int = 0) {
+    override fun press(usage: Int, modifiers: Int) {
         send(ID_KEYBOARD, byteArrayOf(modifiers.toByte(), 0, usage.toByte(), 0, 0, 0, 0, 0))
         send(ID_KEYBOARD, ByteArray(8))
     }
 
-    fun typeChar(c: Char, extraMods: Int = 0): Boolean {
+    override fun typeChar(c: Char, extraMods: Int): Boolean {
         val (mods, usage) = lookup(c) ?: return false
         press(usage, mods or extraMods)
         return true
     }
 
     /** Media keys: 0xE9 vol+, 0xEA vol-, 0xE2 mute, 0xCD play/pause, 0xB5 next, 0xB6 prev. */
-    fun consumer(usage: Int) {
+    override fun consumer(usage: Int) {
         send(ID_CONSUMER, byteArrayOf((usage and 0xFF).toByte(), ((usage shr 8) and 0xFF).toByte()))
         send(ID_CONSUMER, byteArrayOf(0, 0))
     }
