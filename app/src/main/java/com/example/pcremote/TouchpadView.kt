@@ -5,6 +5,7 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.RectF
+import android.graphics.Typeface
 import android.view.MotionEvent
 import android.view.View
 import kotlin.math.abs
@@ -45,30 +46,45 @@ class TouchpadView(context: Context) : View(context) {
     private var moved = 0f
     private var maxPointers = 0
 
-    private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF2A2A2E.toInt() }
-    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFF8A8A92.toInt()
-        textSize = 14 * density
+    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF171A21.toInt() }
+    private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 1 * density
+        color = 0xFF2A3040.toInt()
+    }
+    private val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFF8E96A8.toInt()
         textAlign = Paint.Align.CENTER
+        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        textSize = 15 * density
+    }
+    private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFF8E96A8.toInt()
+        alpha = 150
+        textAlign = Paint.Align.CENTER
+        textSize = 12 * density
     }
 
-    fun setColors(background: Int, hint: Int) {
-        bgPaint.color = background
-        textPaint.color = hint
+    fun setColors(fill: Int, stroke: Int, hint: Int) {
+        fillPaint.color = fill
+        strokePaint.color = stroke
+        titlePaint.color = hint
+        hintPaint.color = hint
+        hintPaint.alpha = 150
         invalidate()
     }
 
     override fun onDraw(canvas: Canvas) {
-        val r = RectF(0f, 0f, width.toFloat(), height.toFloat())
-        canvas.drawRoundRect(r, 16 * density, 16 * density, bgPaint)
+        val inset = strokePaint.strokeWidth / 2
+        val r = RectF(inset, inset, width - inset, height - inset)
+        val radius = 20 * density
+        canvas.drawRoundRect(r, radius, radius, fillPaint)
+        canvas.drawRoundRect(r, radius, radius, strokePaint)
         val cx = width / 2f
         val cy = height / 2f
-        textPaint.textSize = 18 * density
-        canvas.drawText("Touchpad", cx, cy - 22 * density, textPaint)
-        textPaint.textSize = 13 * density
-        canvas.drawText("Tap: click", cx, cy + 2 * density, textPaint)
-        canvas.drawText("Two-finger tap: right click", cx, cy + 22 * density, textPaint)
-        canvas.drawText("Two-finger drag: scroll", cx, cy + 42 * density, textPaint)
+        canvas.drawText("Touchpad", cx, cy - 14 * density, titlePaint)
+        canvas.drawText("Tap to click  ·  Two-finger tap to right click", cx, cy + 8 * density, hintPaint)
+        canvas.drawText("Two-finger drag to scroll", cx, cy + 26 * density, hintPaint)
     }
 
     private fun avgX(e: MotionEvent, skip: Int = -1): Float {

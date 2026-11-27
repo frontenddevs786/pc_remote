@@ -10,7 +10,9 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.content.res.Configuration
+import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.os.Build
@@ -18,6 +20,7 @@ import android.os.Bundle
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
+import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
@@ -25,65 +28,115 @@ import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
-import android.widget.CheckBox
 import android.widget.EditText
+import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.RadioButton
-import android.widget.RadioGroup
+import android.widget.ScrollView
 import android.widget.SeekBar
+import android.widget.Switch
 import android.widget.TextView
+
+private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
+private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
+
+private const val KIND_CARD = 0      // rounded card with outline
+private const val KIND_BG = 1        // plain page background
+private const val KIND_ACCENT = 2    // accent-coloured shape
+private const val KIND_SURFACE = 3   // plain surface colour (drawer)
 
 @SuppressLint("MissingPermission")
 class MainActivity : Activity() {
 
     private class Palette(
         val bg: Int,
+        val surface: Int,
+        val surface2: Int,
         val text: Int,
-        val button: Int,
-        val buttonText: Int,
+        val textDim: Int,
+        val accent: Int,
+        val accentDark: Int,
+        val stroke: Int,
         val ripple: Int,
-        val pad: Int,
-        val padText: Int,
+        val success: Int,
+        val warn: Int,
         val light: Boolean
     )
 
     private val darkPalette = Palette(
-        0xFF121212.toInt(), 0xFFFFFFFF.toInt(), 0xFF3A3A3F.toInt(), 0xFFFFFFFF.toInt(),
-        0x33FFFFFF, 0xFF2A2A2E.toInt(), 0xFF8A8A92.toInt(), false
+        bg = 0xFF0E1014.toInt(), surface = 0xFF171A21.toInt(), surface2 = 0xFF222733.toInt(),
+        text = 0xFFEDEFF5.toInt(), textDim = 0xFF8E96A8.toInt(),
+        accent = 0xFF4C8DFF.toInt(), accentDark = 0xFF2B5BD7.toInt(),
+        stroke = 0xFF2A3040.toInt(), ripple = 0x33FFFFFF,
+        success = 0xFF3DDC84.toInt(), warn = 0xFFFFB020.toInt(), light = false
     )
     private val lightPalette = Palette(
-        0xFFF5F5F8.toInt(), 0xFF1B1B1F.toInt(), 0xFFD6D6E0.toInt(), 0xFF1B1B1F.toInt(),
-        0x33000000, 0xFFE4E4EC.toInt(), 0xFF6A6A72.toInt(), true
+        bg = 0xFFF2F4F8.toInt(), surface = 0xFFFFFFFF.toInt(), surface2 = 0xFFEBEEF4.toInt(),
+        text = 0xFF14171F.toInt(), textDim = 0xFF5F6878.toInt(),
+        accent = 0xFF2F6BFF.toInt(), accentDark = 0xFF1F4FD0.toInt(),
+        stroke = 0xFFDDE2EC.toInt(), ripple = 0x22000000,
+        success = 0xFF1FA463.toInt(), warn = 0xFFD98A00.toInt(), light = true
     )
     private var pal = darkPalette
 
+    // main views
     private lateinit var hid: Hid
-    private lateinit var root: LinearLayout
+    private lateinit var frame: FrameLayout
+    private lateinit var content: LinearLayout
+    private lateinit var topBar: LinearLayout
+    private lateinit var pairCard: LinearLayout
+    private lateinit var bottomPanel: LinearLayout
     private lateinit var pad: TouchpadView
-    private lateinit var pairRow: LinearLayout
-    private lateinit var modeBtn: Button
-    private lateinit var status: TextView
+    private lateinit var status: TextView        // message inside the pairing card
+    private lateinit var statusDot: View
+    private lateinit var statusText: TextView    // "Connected" / "Not connected" in the top bar
     private lateinit var input: EditText
     private lateinit var dragBtn: Button
+    private lateinit var fab: ImageView
 
+    // drawer
+    private lateinit var scrim: View
+    private lateinit var drawer: LinearLayout
+    private lateinit var drawerHeader: LinearLayout
+    private lateinit var drawerStatus: TextView
+    private var drawerOpen = false
+
+    // settings page
+    private lateinit var settingsPage: LinearLayout
+    private lateinit var speedValue: TextView
+    private lateinit var speedSeek: SeekBar
+    private lateinit var accelSwitch: Switch
+
+    // state
     private var bleMode = true
     private var sensitivity = 1.8f
     private var accel = true
     private var themeMode = 0   // 0 = follow system, 1 = light, 2 = dark
-
     private var mods = 0
     private var dragging = false
+    private var linked = false
+    private var fullScreen = false
     private var resetting = false
-    private var typed = ""   // text already sent to the PC
+    private var typed = ""      // text already sent to the PC
 
-    private val modButtons = mutableMapOf<Int, Button>()
+    // theming registries
+    private class Surf(val view: View, val kind: Int, val radiusDp: Int)
+    private class Txt(val view: TextView, val role: Int)
+
+    private val surfs = mutableListOf<Surf>()
+    private val txts = mutableListOf<Txt>()
     private val allButtons = mutableListOf<Button>()
+    private val accentButtons = mutableSetOf<Button>()
+    private val toggleState = mutableMapOf<Button, () -> Boolean>()
+    private val modButtons = mutableMapOf<Int, Button>()
 
     private val prefs by lazy { getSharedPreferences("cfg", MODE_PRIVATE) }
 
-    private val pairHint = "Not connected. Tap Discoverable, then pair from your PC (Add device > Bluetooth)."
+    private val pairHint = "Tap Discoverable, then on Windows open Settings > Bluetooth > Add device > Bluetooth and pick this phone."
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+    private fun lp(w: Int, h: Int, weight: Float = 0f) = LinearLayout.LayoutParams(w, h, weight)
 
     // ---------- lifecycle ----------
 
@@ -105,6 +158,16 @@ class MainActivity : Activity() {
         if (themeMode == 0) applyTheme()
     }
 
+    @Suppress("DEPRECATION")
+    override fun onBackPressed() {
+        when {
+            settingsPage.visibility == View.VISIBLE -> closeSettings()
+            drawerOpen -> closeDrawer()
+            fullScreen -> setFullScreen(false)
+            else -> super.onBackPressed()
+        }
+    }
+
     override fun onDestroy() {
         hid.stop()
         super.onDestroy()
@@ -123,21 +186,34 @@ class MainActivity : Activity() {
         hid.stop()
         bleMode = !bleMode
         prefs.edit().putBoolean("ble", bleMode).apply()
-        modeBtn.text = if (bleMode) "Mode: BLE" else "Mode: Classic"
         status.text = pairHint
+        showConnected(false)
         hid = createBackend()
         startWhenPermitted()
     }
 
-    /** Hide the pairing buttons and status line while connected; show them again when disconnected. */
     private fun showConnected(connected: Boolean) {
-        val v = if (connected) View.GONE else View.VISIBLE
-        pairRow.visibility = v
-        status.visibility = v
+        linked = connected
+        if (!connected && fullScreen) {
+            setFullScreen(false)   // bring the pairing card back if the link drops
+        }
+        pairCard.visibility = if (connected || fullScreen) View.GONE else View.VISIBLE
         if (!connected) status.text = pairHint
+        updateStatusUi()
     }
 
-    // Routine events are not shown; only real problems appear in the status line.
+    private fun updateStatusUi() {
+        val label = if (linked) "Connected" else "Not connected"
+        statusText.text = label
+        drawerStatus.text = label
+        val dot = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(if (linked) pal.success else pal.warn)
+        }
+        statusDot.background = dot
+    }
+
+    // Routine events are not shown; only real problems appear in the pairing card.
     private fun appendLog(msg: String) {
         val problem = listOf("cannot", "could not", "failed", "turn bluetooth", "not ready", "not support", "not registered")
             .any { msg.contains(it, ignoreCase = true) }
@@ -178,29 +254,106 @@ class MainActivity : Activity() {
 
     private fun currentPalette() = if (isDark()) darkPalette else lightPalette
 
-    private fun styleButton(b: Button) {
-        val shape = GradientDrawable().apply {
-            cornerRadius = dp(10).toFloat()
-            setColor(pal.button)
+    /** role: 0 = main text, 1 = dim text, 2 = white, 3 = accent */
+    private fun colorFor(role: Int): Int = when (role) {
+        0 -> pal.text
+        1 -> pal.textDim
+        2 -> Color.WHITE
+        else -> pal.accent
+    }
+
+    private fun styleSurface(s: Surf) {
+        val d = GradientDrawable()
+        d.cornerRadius = dp(s.radiusDp).toFloat()
+        when (s.kind) {
+            KIND_CARD -> {
+                d.setColor(pal.surface)
+                d.setStroke(dp(1), pal.stroke)
+            }
+            KIND_BG -> d.setColor(pal.bg)
+            KIND_ACCENT -> d.setColor(pal.accent)
+            else -> d.setColor(pal.surface)
         }
-        b.background = RippleDrawable(ColorStateList.valueOf(pal.ripple), shape, null)
-        b.setTextColor(pal.buttonText)
+        s.view.background = d
+    }
+
+    private fun surface(v: View, kind: Int, radiusDp: Int = 16) {
+        val s = Surf(v, kind, radiusDp)
+        surfs.add(s)
+        styleSurface(s)
+    }
+
+    private fun txt(text: String, sp: Float, role: Int = 0, bold: Boolean = false): TextView {
+        val t = TextView(this)
+        t.text = text
+        t.textSize = sp
+        if (bold) t.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        t.setTextColor(colorFor(role))
+        txts.add(Txt(t, role))
+        return t
+    }
+
+    private fun icon(type: Int, sizeDp: Int, role: Int) = IconDrawable(type, dp(sizeDp)) { colorFor(role) }
+
+    private fun iconBtn(type: Int, onClick: () -> Unit): ImageView {
+        val v = ImageView(this)
+        v.setImageDrawable(icon(type, 24, 0))
+        v.scaleType = ImageView.ScaleType.CENTER
+        val mask = GradientDrawable()
+        mask.shape = GradientDrawable.OVAL
+        mask.setColor(Color.WHITE)
+        v.background = RippleDrawable(ColorStateList.valueOf(0x33888888), null, mask)
+        v.setOnClickListener { onClick() }
+        return v
+    }
+
+    private fun styleButton(b: Button) {
+        val on = toggleState[b]?.invoke() ?: false
+        val accent = on || accentButtons.contains(b)
+        val shape = GradientDrawable()
+        shape.cornerRadius = dp(12).toFloat()
+        shape.setColor(if (accent) pal.accent else pal.surface2)
+        b.background = RippleDrawable(ColorStateList.valueOf(if (accent) 0x44FFFFFF else pal.ripple), shape, null)
+        b.setTextColor(if (accent) Color.WHITE else pal.text)
         b.stateListAnimator = null
     }
 
     @Suppress("DEPRECATION")
     private fun applyTheme() {
         pal = currentPalette()
-        root.setBackgroundColor(pal.bg)
-        status.setTextColor(pal.text)
+        frame.setBackgroundColor(pal.bg)
+        surfs.forEach { styleSurface(it) }
+        txts.forEach { it.view.setTextColor(colorFor(it.role)) }
         allButtons.forEach { styleButton(it) }
-        pad.setColors(pal.pad, pal.padText)
+        drawerHeader.background = GradientDrawable(
+            GradientDrawable.Orientation.TL_BR, intArrayOf(pal.accent, pal.accentDark)
+        )
+        pad.setColors(pal.surface, pal.stroke, pal.textDim)
+
+        speedSeek.progressTintList = ColorStateList.valueOf(pal.accent)
+        speedSeek.thumbTintList = ColorStateList.valueOf(pal.accent)
+        speedSeek.progressBackgroundTintList = ColorStateList.valueOf(pal.stroke)
+        val checked = arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf())
+        accelSwitch.thumbTintList = ColorStateList(checked, intArrayOf(pal.accent, pal.textDim))
+        accelSwitch.trackTintList = ColorStateList(
+            checked,
+            intArrayOf((pal.accent and 0x00FFFFFF) or 0x66000000, (pal.textDim and 0x00FFFFFF) or 0x55000000)
+        )
+
         window.statusBarColor = pal.bg
         window.navigationBarColor = pal.bg
         val decor = window.decorView
         val bits = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
-        decor.systemUiVisibility = if (pal.light) decor.systemUiVisibility or bits else decor.systemUiVisibility and bits.inv()
-        refreshMods()
+        decor.systemUiVisibility =
+            if (pal.light) decor.systemUiVisibility or bits else decor.systemUiVisibility and bits.inv()
+
+        updateStatusUi()
+        invalidateTree(frame)
+    }
+
+    private fun invalidateTree(v: View) {
+        v.invalidate()
+        if (v is ViewGroup) for (i in 0 until v.childCount) invalidateTree(v.getChildAt(i))
     }
 
     private fun dialogBuilder() = AlertDialog.Builder(
@@ -208,32 +361,35 @@ class MainActivity : Activity() {
         if (pal.light) android.R.style.Theme_Material_Light_Dialog_Alert else android.R.style.Theme_Material_Dialog_Alert
     )
 
-    // ---------- UI ----------
+    // ---------- reusable widgets ----------
 
-    private fun btn(label: String, onClick: () -> Unit): Button = Button(this).apply {
-        text = label
-        isAllCaps = false
-        textSize = 12f
-        minWidth = 0
-        minimumWidth = 0
-        minHeight = dp(44)
-        minimumHeight = dp(44)
-        setPadding(dp(2), 0, dp(2), 0)
-        setOnClickListener { onClick() }
-        allButtons.add(this)
-        styleButton(this)
+    private fun btn(label: String, accent: Boolean = false, onClick: () -> Unit): Button {
+        val b = Button(this)
+        b.text = label
+        b.isAllCaps = false
+        b.textSize = 12f
+        b.typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        b.minWidth = 0
+        b.minimumWidth = 0
+        b.minHeight = dp(44)
+        b.minimumHeight = dp(44)
+        b.setPadding(dp(2), 0, dp(2), 0)
+        b.setOnClickListener { onClick() }
+        allButtons.add(b)
+        if (accent) accentButtons.add(b)
+        styleButton(b)
+        return b
     }
 
-    private fun row(vararg views: View): LinearLayout = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
-        views.forEach {
-            addView(
-                it,
-                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                    setMargins(dp(2), dp(2), dp(2), dp(2))
-                }
-            )
+    private fun row(vararg views: View): LinearLayout {
+        val r = LinearLayout(this)
+        r.orientation = LinearLayout.HORIZONTAL
+        for (v in views) {
+            val params = lp(0, WRAP, 1f)
+            params.setMargins(dp(3), dp(3), dp(3), dp(3))
+            r.addView(v, params)
         }
+        return r
     }
 
     private fun modBtn(label: String, bit: Int): Button {
@@ -242,19 +398,45 @@ class MainActivity : Activity() {
             refreshMods()
         }
         modButtons[bit] = b
+        toggleState[b] = { (mods and bit) != 0 }
+        styleButton(b)
         return b
     }
 
     private fun refreshMods() {
-        modButtons.forEach { (bit, b) ->
-            val on = (mods and bit) != 0
-            b.alpha = if (on) 1f else 0.5f
-            b.setTypeface(null, if (on) Typeface.BOLD else Typeface.NORMAL)
-        }
+        modButtons.values.forEach { styleButton(it) }
     }
 
     private fun keyBtn(label: String, usage: Int) = btn(label) { sendKey(usage) }
     private fun mediaBtn(label: String, usage: Int) = btn(label) { hid.consumer(usage) }
+
+    private fun segmented(labels: List<String>, selected: () -> Int, onSelect: (Int) -> Unit): LinearLayout {
+        val box = LinearLayout(this)
+        box.orientation = LinearLayout.HORIZONTAL
+        labels.forEachIndexed { i, label ->
+            val b = btn(label) {
+                onSelect(i)
+                allButtons.forEach { styleButton(it) }
+            }
+            toggleState[b] = { selected() == i }
+            styleButton(b)
+            val params = lp(0, dp(44), 1f)
+            params.setMargins(dp(2), dp(2), dp(2), dp(2))
+            box.addView(b, params)
+        }
+        return box
+    }
+
+    private fun card(vararg children: View): LinearLayout {
+        val c = LinearLayout(this)
+        c.orientation = LinearLayout.VERTICAL
+        c.setPadding(dp(16), dp(14), dp(16), dp(14))
+        surface(c, KIND_CARD, 16)
+        children.forEach { c.addView(it) }
+        return c
+    }
+
+    // ---------- sending ----------
 
     // Ctrl/Alt/Shift/Win stay on until tapped again.
     private fun sendKey(usage: Int) {
@@ -277,26 +459,16 @@ class MainActivity : Activity() {
         hid.mouse(0, 0, 0, 0)
     }
 
+    // ---------- screen building ----------
+
     private fun buildUi() {
-        root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(8), dp(8), dp(8), dp(8))
-        }
+        frame = FrameLayout(this)
+        content = LinearLayout(this)
+        content.orientation = LinearLayout.VERTICAL
+        content.setPadding(dp(12), dp(4), dp(12), dp(10))
 
-        status = TextView(this).apply {
-            text = pairHint
-            textSize = 12f
-            setPadding(dp(4), dp(4), dp(4), dp(8))
-        }
-        root.addView(status)
-
-        pairRow = row(
-            btn("Discoverable") { if (bleMode) hid.advertise() else makeDiscoverable() },
-            btn("Connect") { if (bleMode) hid.advertise() else pickDevice() },
-            btn(if (bleMode) "Mode: BLE" else "Mode: Classic") { switchMode() }.also { modeBtn = it }
-        )
-        root.addView(pairRow)
-        root.addView(row(btn("Keyboard") { showKeyboard() }, btn("Settings") { showSettings() }))
+        buildTopBar()
+        buildPairCard()
 
         pad = TouchpadView(this)
         pad.sensitivity = sensitivity
@@ -305,28 +477,116 @@ class MainActivity : Activity() {
         pad.onScroll = { steps -> hid.mouse(0, 0, if (dragging) 1 else 0, steps) }
         pad.onTap = { if (!dragging) click(1) }
         pad.onTwoFingerTap = { click(2) }
-        root.addView(
-            pad,
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f).apply {
-                topMargin = dp(6)
-                bottomMargin = dp(6)
-            }
+        val padParams = lp(MATCH, 0, 1f)
+        padParams.topMargin = dp(4)
+        padParams.bottomMargin = dp(8)
+        content.addView(pad, padParams)
+
+        buildBottomPanel()
+        buildKeyboardInput()
+        frame.addView(content, FrameLayout.LayoutParams(MATCH, MATCH))
+
+        // button that brings the controls back from full-screen mode
+        fab = ImageView(this)
+        fab.setImageDrawable(icon(Ic.SHRINK, 24, 2))
+        fab.scaleType = ImageView.ScaleType.CENTER
+        fab.alpha = 0.9f
+        fab.elevation = dp(6).toFloat()
+        fab.visibility = View.GONE
+        surface(fab, KIND_ACCENT, 26)
+        fab.setOnClickListener { setFullScreen(false) }
+        val fabParams = FrameLayout.LayoutParams(dp(52), dp(52), Gravity.BOTTOM or Gravity.END)
+        fabParams.setMargins(0, 0, dp(16), dp(16))
+        frame.addView(fab, fabParams)
+
+        buildSettingsPage()
+        buildDrawer()
+
+        setContentView(frame)
+        applyTheme()
+    }
+
+    private fun buildTopBar() {
+        topBar = LinearLayout(this)
+        topBar.orientation = LinearLayout.HORIZONTAL
+        topBar.gravity = Gravity.CENTER_VERTICAL
+
+        val menu = iconBtn(Ic.MENU) { openDrawer() }
+
+        statusDot = View(this)
+        statusText = txt("Not connected", 12f, 1)
+        val statusRow = LinearLayout(this)
+        statusRow.orientation = LinearLayout.HORIZONTAL
+        statusRow.gravity = Gravity.CENTER_VERTICAL
+        val dotParams = lp(dp(8), dp(8))
+        dotParams.rightMargin = dp(6)
+        statusRow.addView(statusDot, dotParams)
+        statusRow.addView(statusText)
+
+        val titleCol = LinearLayout(this)
+        titleCol.orientation = LinearLayout.VERTICAL
+        titleCol.addView(txt("PC Remote", 18f, 0, true))
+        titleCol.addView(statusRow)
+
+        val full = iconBtn(Ic.EXPAND) { setFullScreen(true) }
+
+        topBar.addView(menu, lp(dp(44), dp(44)))
+        val titleParams = lp(0, WRAP, 1f)
+        titleParams.leftMargin = dp(8)
+        topBar.addView(titleCol, titleParams)
+        topBar.addView(full, lp(dp(44), dp(44)))
+        content.addView(topBar, lp(MATCH, dp(56)))
+    }
+
+    private fun buildPairCard() {
+        status = txt(pairHint, 12f, 1)
+        val statusParams = lp(MATCH, WRAP)
+        statusParams.topMargin = dp(2)
+        statusParams.bottomMargin = dp(6)
+
+        pairCard = LinearLayout(this)
+        pairCard.orientation = LinearLayout.VERTICAL
+        pairCard.setPadding(dp(14), dp(12), dp(14), dp(8))
+        surface(pairCard, KIND_CARD, 16)
+        pairCard.addView(txt("Connect to your PC", 15f, 0, true))
+        pairCard.addView(status, statusParams)
+        pairCard.addView(
+            row(
+                btn("Discoverable", accent = true) { if (bleMode) hid.advertise() else makeDiscoverable() },
+                btn("Connect") { if (bleMode) hid.advertise() else pickDevice() }
+            )
         )
+        val params = lp(MATCH, WRAP)
+        params.topMargin = dp(4)
+        content.addView(pairCard, params)
+    }
+
+    private fun buildBottomPanel() {
+        bottomPanel = LinearLayout(this)
+        bottomPanel.orientation = LinearLayout.VERTICAL
+        bottomPanel.setPadding(dp(6), dp(6), dp(6), dp(6))
+        surface(bottomPanel, KIND_CARD, 18)
 
         dragBtn = btn("Drag: off") {
             dragging = !dragging
             dragBtn.text = if (dragging) "Drag: ON" else "Drag: off"
+            styleButton(dragBtn)
             hid.mouse(0, 0, if (dragging) 1 else 0, 0)
         }
-        root.addView(
-            row(
-                btn("Left click") { click(1) },
-                dragBtn,
-                btn("Right click") { click(2) }
-            )
-        )
+        toggleState[dragBtn] = { dragging }
+        styleButton(dragBtn)
 
-        root.addView(
+        // Keyboard button sits at the bottom-right corner, after the media keys.
+        val keyboard = ImageView(this)
+        keyboard.setImageDrawable(icon(Ic.KEYBOARD, 24, 2))
+        keyboard.scaleType = ImageView.ScaleType.CENTER
+        keyboard.minimumHeight = dp(44)
+        surface(keyboard, KIND_ACCENT, 12)
+        keyboard.foreground = RippleDrawable(ColorStateList.valueOf(0x44FFFFFF), null, ColorDrawable(Color.BLACK))
+        keyboard.setOnClickListener { showKeyboard() }
+
+        bottomPanel.addView(row(btn("Left click") { click(1) }, dragBtn, btn("Right click") { click(2) }))
+        bottomPanel.addView(
             row(
                 modBtn("Ctrl", HidController.MOD_CTRL),
                 modBtn("Alt", HidController.MOD_ALT),
@@ -334,33 +594,38 @@ class MainActivity : Activity() {
                 modBtn("Win", HidController.MOD_WIN)
             )
         )
-        root.addView(
+        bottomPanel.addView(
             row(
                 keyBtn("Esc", 0x29), keyBtn("Tab", 0x2B), keyBtn("Del", 0x4C),
                 keyBtn("Bksp", 0x2A), keyBtn("Enter", 0x28),
                 btn("Start") { hid.press(0, HidController.MOD_WIN) }
             )
         )
-        root.addView(
+        bottomPanel.addView(
             row(
                 keyBtn("←", 0x50), keyBtn("↑", 0x52), keyBtn("↓", 0x51), keyBtn("→", 0x4F),
                 keyBtn("Home", 0x4A), keyBtn("End", 0x4D)
             )
         )
-        root.addView(
-            row(
-                mediaBtn("Vol-", 0xEA), mediaBtn("Vol+", 0xE9), mediaBtn("Mute", 0xE2),
-                mediaBtn("Play", 0xCD), mediaBtn("Prev", 0xB6), mediaBtn("Next", 0xB5)
-            )
+        val mediaRow = row(
+            mediaBtn("Vol-", 0xEA), mediaBtn("Vol+", 0xE9), mediaBtn("Mute", 0xE2),
+            mediaBtn("Play", 0xCD), mediaBtn("Prev", 0xB6), mediaBtn("Next", 0xB5),
+            keyboard
         )
+        (keyboard.layoutParams as LinearLayout.LayoutParams).weight = 1.5f
+        bottomPanel.addView(mediaRow)
 
-        // Invisible field that captures the phone's on-screen keyboard (with its suggestion strip).
-        input = EditText(this).apply {
-            alpha = 0f
-            inputType = InputType.TYPE_CLASS_TEXT
-            imeOptions = EditorInfo.IME_ACTION_NONE or EditorInfo.IME_FLAG_NO_EXTRACT_UI or
-                EditorInfo.IME_FLAG_NO_FULLSCREEN
-        }
+        content.addView(bottomPanel, lp(MATCH, WRAP))
+    }
+
+    /** Invisible field that captures the phone's on-screen keyboard (with its suggestion strip). */
+    private fun buildKeyboardInput() {
+        input = EditText(this)
+        input.alpha = 0f
+        input.inputType = InputType.TYPE_CLASS_TEXT
+        input.imeOptions = EditorInfo.IME_ACTION_NONE or EditorInfo.IME_FLAG_NO_EXTRACT_UI or
+            EditorInfo.IME_FLAG_NO_FULLSCREEN
+
         // Mirror the field on the PC: whatever changes in the field (typing, autocorrect,
         // tapping a suggestion) is sent as backspaces plus the new characters.
         input.addTextChangedListener(object : TextWatcher {
@@ -408,41 +673,130 @@ class MainActivity : Activity() {
                 true
             }
         }
-        root.addView(input, LinearLayout.LayoutParams(dp(1), dp(1)))
-
-        setContentView(root)
-        applyTheme()
+        content.addView(input, lp(dp(1), dp(1)))
     }
 
-    // ---------- actions ----------
+    private fun buildDrawer() {
+        val width = dp(288)
 
-    private fun showKeyboard() {
-        input.requestFocus()
-        val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
-        resetInput()
-        imm.showSoftInput(input, InputMethodManager.SHOW_FORCED)
+        scrim = View(this)
+        scrim.setBackgroundColor(0x99000000.toInt())
+        scrim.visibility = View.GONE
+        scrim.setOnClickListener { closeDrawer() }
+        frame.addView(scrim, FrameLayout.LayoutParams(MATCH, MATCH))
+
+        drawer = LinearLayout(this)
+        drawer.orientation = LinearLayout.VERTICAL
+        drawer.isClickable = true
+        drawer.elevation = dp(16).toFloat()
+        surface(drawer, KIND_SURFACE, 0)
+
+        drawerHeader = LinearLayout(this)
+        drawerHeader.orientation = LinearLayout.VERTICAL
+        drawerHeader.setPadding(dp(20), dp(32), dp(20), dp(20))
+        val logo = ImageView(this)
+        logo.setImageDrawable(icon(Ic.TOUCHPAD, 30, 2))
+        logo.scaleType = ImageView.ScaleType.CENTER
+        val logoBg = GradientDrawable()
+        logoBg.cornerRadius = dp(14).toFloat()
+        logoBg.setColor(0x33FFFFFF)
+        logo.background = logoBg
+        drawerHeader.addView(logo, lp(dp(52), dp(52)))
+        val nameParams = lp(WRAP, WRAP)
+        nameParams.topMargin = dp(14)
+        drawerHeader.addView(txt("PC Remote", 20f, 2, true), nameParams)
+        drawerStatus = txt("Not connected", 12f, 2)
+        val statusParams = lp(WRAP, WRAP)
+        statusParams.topMargin = dp(2)
+        drawerHeader.addView(drawerStatus, statusParams)
+        drawer.addView(drawerHeader, lp(MATCH, WRAP))
+
+        drawer.addView(drawerItem(Ic.TUNE, "Settings") {
+            closeDrawer()
+            openSettings()
+        })
+        drawer.addView(drawerItem(Ic.EXPAND, "Full-screen touchpad") {
+            closeDrawer()
+            setFullScreen(true)
+        })
+        drawer.addView(drawerItem(Ic.HELP, "How to connect") {
+            closeDrawer()
+            showHelp()
+        })
+
+        drawer.addView(View(this), lp(MATCH, 0, 1f))
+        val footer = txt("Version 1.0", 11f, 1)
+        footer.setPadding(dp(20), 0, dp(20), dp(18))
+        drawer.addView(footer)
+
+        frame.addView(drawer, FrameLayout.LayoutParams(width, MATCH))
+        drawer.translationX = -width.toFloat()
     }
 
-    private fun showSettings() {
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(22), dp(12), dp(22), 0)
+    private fun drawerItem(type: Int, label: String, onClick: () -> Unit): LinearLayout {
+        val item = LinearLayout(this)
+        item.orientation = LinearLayout.HORIZONTAL
+        item.gravity = Gravity.CENTER_VERTICAL
+        item.setPadding(dp(20), 0, dp(20), 0)
+        item.isClickable = true
+        item.background = RippleDrawable(ColorStateList.valueOf(0x33888888), null, ColorDrawable(Color.BLACK))
+        item.setOnClickListener { onClick() }
+        val iv = ImageView(this)
+        iv.setImageDrawable(icon(type, 24, 1))
+        item.addView(iv, lp(dp(24), dp(24)))
+        val labelParams = lp(WRAP, WRAP)
+        labelParams.leftMargin = dp(18)
+        item.addView(txt(label, 15f, 0), labelParams)
+        item.layoutParams = lp(MATCH, dp(52))
+        return item
+    }
+
+    private fun buildSettingsPage() {
+        settingsPage = LinearLayout(this)
+        settingsPage.orientation = LinearLayout.VERTICAL
+        settingsPage.isClickable = true
+        settingsPage.visibility = View.GONE
+        settingsPage.setPadding(dp(12), dp(4), dp(12), dp(12))
+        surface(settingsPage, KIND_BG, 0)
+
+        val bar = LinearLayout(this)
+        bar.orientation = LinearLayout.HORIZONTAL
+        bar.gravity = Gravity.CENTER_VERTICAL
+        bar.addView(iconBtn(Ic.BACK) { closeSettings() }, lp(dp(44), dp(44)))
+        val titleParams = lp(WRAP, WRAP)
+        titleParams.leftMargin = dp(8)
+        bar.addView(txt("Settings", 18f, 0, true), titleParams)
+        settingsPage.addView(bar, lp(MATCH, dp(56)))
+
+        val list = LinearLayout(this)
+        list.orientation = LinearLayout.VERTICAL
+        val scroll = ScrollView(this)
+        scroll.isVerticalScrollBarEnabled = false
+        scroll.addView(list)
+        settingsPage.addView(scroll, lp(MATCH, 0, 1f))
+
+        fun addCard(c: View) {
+            val p = lp(MATCH, WRAP)
+            p.topMargin = dp(12)
+            list.addView(c, p)
         }
 
-        val speedLabel = TextView(this).apply { textSize = 15f }
-        fun updateLabel() {
-            speedLabel.text = "Cursor speed: %.1f".format(sensitivity)
-        }
-        updateLabel()
-        val seek = SeekBar(this).apply {
-            max = 100
-            progress = ((sensitivity - 0.5f) / 0.045f).toInt().coerceIn(0, 100)
-        }
-        seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+        // --- Cursor ---
+        speedValue = txt("", 13f, 1)
+        updateSpeedLabel()
+        val speedRow = LinearLayout(this)
+        speedRow.orientation = LinearLayout.HORIZONTAL
+        speedRow.addView(txt("Speed", 15f, 0), lp(0, WRAP, 1f))
+        speedRow.addView(speedValue)
+
+        speedSeek = SeekBar(this)
+        speedSeek.max = 100
+        speedSeek.progress = ((sensitivity - 0.5f) / 0.045f).toInt().coerceIn(0, 100)
+        speedSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
                 sensitivity = 0.5f + p * 0.045f
                 pad.sensitivity = sensitivity
-                updateLabel()
+                updateSpeedLabel()
             }
 
             override fun onStartTrackingTouch(sb: SeekBar?) {}
@@ -452,42 +806,130 @@ class MainActivity : Activity() {
             }
         })
 
-        val accelBox = CheckBox(this).apply {
-            text = "Pointer acceleration (faster swipes move further)"
-            isChecked = accel
-            setOnCheckedChangeListener { _, checked ->
-                accel = checked
-                pad.accel = checked
-                prefs.edit().putBoolean("accel", checked).apply()
-            }
+        accelSwitch = Switch(this)
+        accelSwitch.isChecked = accel
+        accelSwitch.setOnCheckedChangeListener { _, checked ->
+            accel = checked
+            pad.accel = checked
+            prefs.edit().putBoolean("accel", checked).apply()
         }
+        val accelText = LinearLayout(this)
+        accelText.orientation = LinearLayout.VERTICAL
+        accelText.addView(txt("Pointer acceleration", 15f, 0))
+        accelText.addView(txt("Faster swipes move the cursor further", 12f, 1))
+        val accelRow = LinearLayout(this)
+        accelRow.orientation = LinearLayout.HORIZONTAL
+        accelRow.gravity = Gravity.CENTER_VERTICAL
+        accelRow.addView(accelText, lp(0, WRAP, 1f))
+        accelRow.addView(accelSwitch)
 
-        val themeLabel = TextView(this).apply {
-            text = "Theme"
-            textSize = 15f
-            setPadding(0, dp(14), 0, 0)
-        }
-        val group = RadioGroup(this)
-        listOf("Follow system", "Light", "Dark").forEachIndexed { i, label ->
-            group.addView(RadioButton(this).apply {
-                text = label
-                id = 100 + i
-                isChecked = themeMode == i
-            })
-        }
-        group.setOnCheckedChangeListener { _, checkedId ->
-            themeMode = checkedId - 100
-            prefs.edit().putInt("theme", themeMode).apply()
-            applyTheme()
-        }
+        val cursorTitle = txt("CURSOR", 12f, 3, true)
+        val seekParams = lp(MATCH, WRAP)
+        seekParams.topMargin = dp(6)
+        val accelParams = lp(MATCH, WRAP)
+        accelParams.topMargin = dp(12)
+        val cursorCard = card(cursorTitle)
+        cursorCard.addView(speedRow, lp(MATCH, WRAP).apply { topMargin = dp(10) })
+        cursorCard.addView(speedSeek, seekParams)
+        cursorCard.addView(accelRow, accelParams)
+        addCard(cursorCard)
 
-        box.addView(speedLabel)
-        box.addView(seek)
-        box.addView(accelBox)
-        box.addView(themeLabel)
-        box.addView(group)
+        // --- Appearance ---
+        val themeCard = card(txt("APPEARANCE", 12f, 3, true))
+        themeCard.addView(
+            segmented(
+                listOf("System", "Light", "Dark"),
+                { themeMode },
+                {
+                    themeMode = it
+                    prefs.edit().putInt("theme", it).apply()
+                    applyTheme()
+                }
+            ),
+            lp(MATCH, WRAP).apply { topMargin = dp(10) }
+        )
+        addCard(themeCard)
 
-        dialogBuilder().setTitle("Settings").setView(box).setPositiveButton("Done", null).show()
+        // --- Connection ---
+        val connCard = card(txt("CONNECTION", 12f, 3, true))
+        connCard.addView(
+            segmented(
+                listOf("Bluetooth LE", "Classic"),
+                { if (bleMode) 0 else 1 },
+                { if ((it == 0) != bleMode) switchMode() }
+            ),
+            lp(MATCH, WRAP).apply { topMargin = dp(10) }
+        )
+        connCard.addView(
+            txt("Use Bluetooth LE unless your phone supports classic Bluetooth keyboards. Changing this restarts pairing.", 12f, 1),
+            lp(MATCH, WRAP).apply { topMargin = dp(8) }
+        )
+        addCard(connCard)
+
+        frame.addView(settingsPage, FrameLayout.LayoutParams(MATCH, MATCH))
+    }
+
+    private fun updateSpeedLabel() {
+        speedValue.text = "%.1fx".format(sensitivity)
+    }
+
+    // ---------- actions ----------
+
+    private fun openDrawer() {
+        drawerOpen = true
+        scrim.visibility = View.VISIBLE
+        scrim.alpha = 0f
+        scrim.animate().alpha(1f).setDuration(180).start()
+        drawer.animate().translationX(0f).setDuration(220).start()
+    }
+
+    private fun closeDrawer() {
+        drawerOpen = false
+        scrim.animate().alpha(0f).setDuration(180).withEndAction {
+            if (!drawerOpen) scrim.visibility = View.GONE
+        }.start()
+        drawer.animate().translationX(-dp(288).toFloat()).setDuration(220).start()
+    }
+
+    private fun openSettings() {
+        settingsPage.alpha = 0f
+        settingsPage.visibility = View.VISIBLE
+        settingsPage.animate().alpha(1f).setDuration(160).start()
+    }
+
+    private fun closeSettings() {
+        settingsPage.visibility = View.GONE
+    }
+
+    /** Full-screen mode hides every on-screen button so the touchpad fills the screen. */
+    private fun setFullScreen(on: Boolean) {
+        fullScreen = on
+        val v = if (on) View.GONE else View.VISIBLE
+        topBar.visibility = v
+        bottomPanel.visibility = v
+        pairCard.visibility = if (on || linked) View.GONE else View.VISIBLE
+        fab.visibility = if (on) View.VISIBLE else View.GONE
+    }
+
+    private fun showKeyboard() {
+        input.requestFocus()
+        val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+        resetInput()
+        imm.showSoftInput(input, InputMethodManager.SHOW_FORCED)
+    }
+
+    private fun showHelp() {
+        dialogBuilder()
+            .setTitle("How to connect")
+            .setMessage(
+                "1. Tap Discoverable on this screen.\n" +
+                    "2. On Windows open Settings > Bluetooth & devices > Add device > Bluetooth.\n" +
+                    "3. Pick this phone and accept the pairing request on both devices.\n\n" +
+                    "Once connected, the pairing card disappears. If Windows will not reconnect, " +
+                    "remove the phone in Windows Bluetooth settings and pair again."
+            )
+            .setPositiveButton("OK", null)
+            .show()
     }
 
     private fun makeDiscoverable() {
