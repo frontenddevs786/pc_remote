@@ -62,7 +62,7 @@ class HidService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        HidHost.log("Service onStartCommand action=${intent?.action} (null intent = restarted by system)")
+        HidHost.log("Service onStartCommand (${if (intent == null) "restarted by the system" else "started by the app"})")
         if (intent?.action == ACTION_STOP) {
             HidHost.shutdown()
             stopForeground(STOP_FOREGROUND_REMOVE)

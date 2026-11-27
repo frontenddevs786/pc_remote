@@ -117,6 +117,7 @@ class MainActivity : Activity() {
     private lateinit var speedValue: TextView
     private lateinit var speedSeek: SeekBar
     private lateinit var accelSwitch: Switch
+    private lateinit var recentsSwitch: Switch
 
     // state
     private var bleMode = true
@@ -165,11 +166,26 @@ class MainActivity : Activity() {
         themeMode = prefs.getInt("theme", 0)
         pal = currentPalette()
         buildUi()
+        applyRecentsPolicy()
         startWhenPermitted()
+    }
+
+    /**
+     * Some phones (vivo, Xiaomi, ...) kill the whole app when its card is swiped away in the recent-apps
+     * list, which drops the PC connection. Hiding the app from that list means there is no card to swipe.
+     */
+    private fun applyRecentsPolicy() {
+        try {
+            val am = getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
+            am.appTasks.firstOrNull()?.setExcludeFromRecents(prefs.getBoolean("hide_recents", true))
+        } catch (e: Exception) {
+            HidHost.log("setExcludeFromRecents failed: $e")
+        }
     }
 
     override fun onStart() {
         super.onStart()
+        applyRecentsPolicy()
         HidHost.log("Activity onStart (backend running: ${HidHost.backend != null}, connected: ${HidHost.connected})")
         // Re-attach to the backend that kept running in the background.
         HidHost.uiConnection = { connected -> showConnected(connected) }
@@ -191,12 +207,12 @@ class MainActivity : Activity() {
         discoverBusy = false
         refreshPairButtons()
         status.text = if (bleMode) {
-            "Waiting for $name to reconnect... If it does not, on Windows open Settings > Bluetooth & devices, click this phone and choose Connect."
+            "Waiting for $name to reconnect. Windows can take up to a minute. If it does not, open Settings > Bluetooth & devices on Windows, click this phone and choose Connect."
         } else {
             "Reconnecting to $name... Make sure Bluetooth is on at your PC."
         }
         uiHandler.removeCallbacksAndMessages(null)
-        uiHandler.postDelayed({ clearPairBusy() }, 45_000)
+        uiHandler.postDelayed({ clearPairBusy() }, 90_000)
     }
 
     override fun onDestroy() {
@@ -517,10 +533,10 @@ class MainActivity : Activity() {
         speedSeek.progressBackgroundTintList = ColorStateList.valueOf(pal.stroke)
         val checked = arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf())
         accelSwitch.thumbTintList = ColorStateList(checked, intArrayOf(pal.accent, pal.textDim))
-        accelSwitch.trackTintList = ColorStateList(
-            checked,
-            intArrayOf((pal.accent and 0x00FFFFFF) or 0x66000000, (pal.textDim and 0x00FFFFFF) or 0x55000000)
-        )
+        val trackColors = intArrayOf((pal.accent and 0x00FFFFFF) or 0x66000000, (pal.textDim and 0x00FFFFFF) or 0x55000000)
+        accelSwitch.trackTintList = ColorStateList(checked, trackColors)
+        recentsSwitch.thumbTintList = ColorStateList(checked, intArrayOf(pal.accent, pal.textDim))
+        recentsSwitch.trackTintList = ColorStateList(checked, trackColors)
 
         window.statusBarColor = pal.bg
         window.navigationBarColor = pal.bg
@@ -1075,6 +1091,28 @@ class MainActivity : Activity() {
             txt("Use Bluetooth LE unless your phone supports classic Bluetooth keyboards. Changing this restarts pairing.", 12f, 1),
             lp(MATCH, WRAP).apply { topMargin = dp(8) }
         )
+        recentsSwitch = Switch(this)
+        recentsSwitch.isChecked = prefs.getBoolean("hide_recents", true)
+        recentsSwitch.setOnCheckedChangeListener { _, checked ->
+            prefs.edit().putBoolean("hide_recents", checked).apply()
+            applyRecentsPolicy()
+        }
+        val recentsText = LinearLayout(this)
+        recentsText.orientation = LinearLayout.VERTICAL
+        recentsText.addView(txt("Stay connected when closed", 15f, 0))
+        recentsText.addView(
+            txt(
+                "Hides the app from the recent apps list so swiping it away cannot disconnect your PC. " +
+                    "Open it again from the launcher or the notification.",
+                12f, 1
+            )
+        )
+        val recentsRow = LinearLayout(this)
+        recentsRow.orientation = LinearLayout.HORIZONTAL
+        recentsRow.gravity = Gravity.CENTER_VERTICAL
+        recentsRow.addView(recentsText, lp(0, WRAP, 1f))
+        recentsRow.addView(recentsSwitch)
+        connCard.addView(recentsRow, lp(MATCH, WRAP).apply { topMargin = dp(16) })
         addCard(connCard)
 
         frame.addView(settingsPage, FrameLayout.LayoutParams(MATCH, MATCH))
