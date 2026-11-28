@@ -73,7 +73,7 @@ class BleHidController(
     @Volatile private var running = false
     @Volatile private var wantAdvertising = false
     @Volatile private var advertising = false
-    private var lastDirectConnect = 0L
+    @Volatile private var quietNext = false     // the periodic refresh should not repeat the 'Visible' message
 
     private val subscribed = java.util.Collections.synchronizedSet(HashSet<Int>())
     private val pendingServices = LinkedList<BluetoothGattService>()
@@ -112,6 +112,18 @@ class BleHidController(
         running = true
         try {
             val paired = adapter.bondedDevices?.joinToString { "${it.name ?: "?"} ${it.address}" }
+            if (prefs.getString("ble_last_host", null) == null) {
+                // Nothing remembered yet (new install / settings reset): adopt the paired computer, if there is one.
+                val pcs = adapter.bondedDevices?.filter {
+                    it.bluetoothClass?.majorDeviceClass == android.bluetooth.BluetoothClass.Device.Major.COMPUTER
+                }.orEmpty()
+                if (pcs.size == 1) {
+                    prefs.edit()
+                        .putString("ble_last_host", pcs[0].address)
+                        .putString("ble_last_host_name", pcs[0].name ?: pcs[0].address)
+                        .apply()
+                }
+            }
             onStatus("Paired devices: ${paired ?: "none"}; remembered PC: ${prefs.getString("ble_last_host_name", "none")}")
         } catch (e: Exception) {
             // ignore
@@ -119,7 +131,7 @@ class BleHidController(
         startWorker()
         addNextService()
         handler.removeCallbacks(watchdog)
-        handler.postDelayed(watchdog, 30_000)
+        handler.postDelayed(watchdog, 15_000)
     }
 
     override fun stop() {
@@ -298,7 +310,6 @@ class BleHidController(
                     subscribed.clear()
                     queue.clear()
                     connectionListener?.invoke(false)
-                    lastDirectConnect = 0L
                     reconnect()      // advertise again and call the PC back
                 } else if (wantAdvertising && running && host == null) {
                     advertise()
@@ -373,29 +384,6 @@ class BleHidController(
         if (name != null) onStatus("Waiting for $name to reconnect...")
         wantAdvertising = true
         if (!advertising) advertise()      // do not restart advertising while a PC may be mid-connect
-        connectToRememberedHost()
-    }
-
-    /**
-     * Besides advertising, ask the Bluetooth stack to connect to the remembered PC as soon as it is
-     * available (background / auto-connect). This is what lets a bonded keyboard come back by itself.
-     */
-    private fun connectToRememberedHost() {
-        val addr = prefs.getString("ble_last_host", null) ?: return
-        val now = System.currentTimeMillis()
-        if (now - lastDirectConnect < 10_000) return
-        lastDirectConnect = now
-        try {
-            val dev = manager.adapter?.bondedDevices?.firstOrNull { it.address == addr }
-            if (dev == null) {
-                onStatus("Remembered PC is no longer paired. Pair it again from the PC.")
-                prefs.edit().remove("ble_last_host").remove("ble_last_host_name").apply()
-                return
-            }
-            server?.connect(dev, true)
-        } catch (e: Exception) {
-            // Not supported on this phone: advertising alone still lets the PC reconnect.
-        }
     }
 
     /** Re-starts advertising now and then, in case the system silently stopped it. */
@@ -403,10 +391,10 @@ class BleHidController(
         override fun run() {
             if (!running) return
             if (host == null && wantAdvertising) {
+                quietNext = true
                 advertise()          // the system can silently stop advertising, so renew it now and then
-                connectToRememberedHost()
             }
-            handler.postDelayed(this, 60_000)
+            handler.postDelayed(this, 15_000)
         }
     }
 
@@ -415,6 +403,10 @@ class BleHidController(
     private val advCallback = object : AdvertiseCallback() {
         override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
             advertising = true
+            if (quietNext) {
+                quietNext = false
+                return
+            }
             val name = try { manager.adapter?.name } catch (e: Exception) { null }
             onStatus("Visible to the PC. On Windows: Add device > Bluetooth > pick '${name ?: "this phone"}'")
         }
