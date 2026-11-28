@@ -11,8 +11,8 @@ android {
         applicationId = "com.example.pcremote"
         minSdk = 28            // BluetoothHidDevice needs Android 9+
         targetSdk = 34
-        versionCode = 392
-        versionName = "3.9.2"
+        versionCode = 393
+        versionName = "3.9.3"
     }
 
     buildTypes {

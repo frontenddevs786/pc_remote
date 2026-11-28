@@ -770,7 +770,7 @@ class MainActivity : Activity() {
         keyboard.minimumHeight = dp(44)
         surface(keyboard, KIND_ACCENT, 12)
         keyboard.foreground = RippleDrawable(ColorStateList.valueOf(0x44FFFFFF), null, ColorDrawable(Color.BLACK))
-        keyboard.setOnClickListener { showKeyboard() }
+        keyboard.setOnClickListener { toggleKeyboard() }
 
         bottomPanel.addView(row(btn("Left click") { click(1) }, dragBtn, btn("Right click") { click(2) }))
         bottomPanel.addView(
@@ -1104,11 +1104,34 @@ class MainActivity : Activity() {
         refreshLayout()
     }
 
+    private fun keyboardVisible(): Boolean {
+        val decor = window.decorView
+        if (Build.VERSION.SDK_INT >= 30) {
+            decor.rootWindowInsets?.let { return it.isVisible(android.view.WindowInsets.Type.ime()) }
+        }
+        val r = android.graphics.Rect()
+        decor.getWindowVisibleDisplayFrame(r)
+        val screen = decor.rootView.height
+        return screen > 0 && screen - r.bottom > screen * 0.15
+    }
+
+    /** The keyboard button: shows the phone keyboard, or hides it if it is already open. */
+    private fun toggleKeyboard() {
+        if (keyboardVisible()) hideKeyboard() else showKeyboard()
+    }
+
     private fun showKeyboard() {
         input.requestFocus()
         val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
         resetInput()
         imm.showSoftInput(input, InputMethodManager.SHOW_FORCED)
+    }
+
+    private fun hideKeyboard() {
+        val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+        imm.hideSoftInputFromWindow(input.windowToken, 0)
+        input.clearFocus()
+        resetInput()
     }
 
     private fun showLog() {
