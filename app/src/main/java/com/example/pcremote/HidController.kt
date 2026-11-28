@@ -92,7 +92,7 @@ class HidController(
     }
 
     override var connectionListener: ((Boolean) -> Unit)? = null
-    private val prefs = context.getSharedPreferences("link", Context.MODE_PRIVATE)
+    private val prefs = context.getSharedPreferences("cfg", Context.MODE_PRIVATE)
     private val handler = Handler(Looper.getMainLooper())
     private var hid: BluetoothHidDevice? = null
     @Volatile private var host: BluetoothDevice? = null

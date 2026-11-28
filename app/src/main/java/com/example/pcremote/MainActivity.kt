@@ -87,9 +87,8 @@ class MainActivity : Activity() {
     private var pal = darkPalette
 
     // main views
-    // This screen runs in its own process (":ui"). The Bluetooth link lives in HidService's process and
-    // survives this screen being closed; HidClient forwards everything to it.
-    private val hid: Hid get() = HidClient
+    // The Bluetooth backend lives in HidHost, kept alive by HidService only while the app is open or minimized.
+    private val hid: Hid get() = HidHost.backend ?: NoopHid
     private lateinit var frame: FrameLayout
     private lateinit var content: LinearLayout
     private lateinit var topBar: LinearLayout
@@ -121,7 +120,6 @@ class MainActivity : Activity() {
     private lateinit var speedValue: TextView
     private lateinit var speedSeek: SeekBar
     private lateinit var accelSwitch: Switch
-    private lateinit var awakeSwitch: Switch
 
     // state
     private var bleMode = true
@@ -168,7 +166,6 @@ class MainActivity : Activity() {
         sensitivity = prefs.getFloat("speed", 1.8f)
         accel = prefs.getBoolean("accel", true)
         themeMode = prefs.getInt("theme", 0)
-        HidClient.configure(bleMode, prefs.getBoolean("keep_awake", true))
         pal = currentPalette()
         buildUi()
         showInRecents()
@@ -191,23 +188,23 @@ class MainActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
-        HidHost.log("Activity onStart")
-        // Attach to the service that kept running in the background.
-        HidClient.uiConnection = { connected ->
-            showConnected(connected)
-            showAutoReconnect()
+        HidHost.log("Activity onStart (backend running: ${HidHost.backend != null}, connected: ${HidHost.connected})")
+        HidHost.uiConnection = { connected -> showConnected(connected) }
+        HidHost.uiStatus = { appendLog(it) }
+        if (HidHost.backend == null) {
+            if (hasBluetoothPermission()) launchBackend()
+        } else {
+            HidService.start(this)      // make sure the service (and its notification) is up while the app is open
+            if (!HidHost.connected) hid.reconnect()
         }
-        HidClient.uiStatus = { appendLog(it) }
-        if (hasBluetoothPermission()) launchBackend()
-        HidClient.bind(this)
-        showConnected(HidClient.connected)
+        showConnected(HidHost.connected)
         showAutoReconnect()
     }
 
     /** If a PC was connected before, say so and show that the app is reconnecting by itself. */
     private fun showAutoReconnect() {
-        if (HidClient.connected || connectBusy || discoverBusy) return
-        val name = HidClient.lastHostName ?: return
+        if (HidHost.connected || connectBusy || discoverBusy) return
+        val name = prefs.getString(if (bleMode) "ble_last_host_name" else "last_host_name", null) ?: return
         connectBusy = true
         discoverBusy = false
         refreshPairButtons()
@@ -227,9 +224,8 @@ class MainActivity : Activity() {
 
     override fun onStop() {
         HidHost.log("Activity onStop")
-        HidClient.uiConnection = null
-        HidClient.uiStatus = null
-        HidClient.unbind(this)
+        HidHost.uiConnection = null
+        HidHost.uiStatus = null
         super.onStop()
     }
 
@@ -259,12 +255,12 @@ class MainActivity : Activity() {
         clearPairBusy()
         status.text = pairHint
         showConnected(false)
-        HidClient.switchMode(bleMode)
+        HidHost.switchMode(applicationContext, bleMode)
     }
 
     private fun launchBackend() {
         HidService.start(this)
-        HidClient.ensure(bleMode)
+        HidHost.ensure(applicationContext, bleMode)
     }
 
     private fun showConnected(connected: Boolean) {
@@ -368,12 +364,12 @@ class MainActivity : Activity() {
             hid.advertise()
             uiHandler.removeCallbacksAndMessages(null)
             uiHandler.postDelayed({ clearPairBusy() }, 60_000)
-        } else if (HidClient.hasLastHost) {
+        } else if (prefs.getString("last_host", null) != null) {
             // Same as a Bluetooth headset: reuse the pairing that already exists. Long-press to pick another PC.
             connectBusy = true
             discoverBusy = false
             refreshPairButtons()
-            status.text = "Connecting to ${HidClient.lastHostName ?: "your PC"}... Long-press Connect to pick another PC."
+            status.text = "Connecting to ${prefs.getString("last_host_name", "your PC")}... Long-press Connect to pick another PC."
             hid.reconnect()
             uiHandler.removeCallbacksAndMessages(null)
             uiHandler.postDelayed({ clearPairBusy() }, 30_000)
@@ -550,8 +546,6 @@ class MainActivity : Activity() {
         accelSwitch.thumbTintList = ColorStateList(checked, intArrayOf(pal.accent, pal.textDim))
         val trackColors = intArrayOf((pal.accent and 0x00FFFFFF) or 0x66000000, (pal.textDim and 0x00FFFFFF) or 0x55000000)
         accelSwitch.trackTintList = ColorStateList(checked, trackColors)
-        awakeSwitch.thumbTintList = ColorStateList(checked, intArrayOf(pal.accent, pal.textDim))
-        awakeSwitch.trackTintList = ColorStateList(checked, trackColors)
 
         window.statusBarColor = pal.bg
         window.navigationBarColor = pal.bg
@@ -1111,28 +1105,6 @@ class MainActivity : Activity() {
             txt("Use Bluetooth LE unless your phone supports classic Bluetooth keyboards. Changing this restarts pairing.", 12f, 1),
             lp(MATCH, WRAP).apply { topMargin = dp(8) }
         )
-        awakeSwitch = Switch(this)
-        awakeSwitch.isChecked = prefs.getBoolean("keep_awake", true)
-        awakeSwitch.setOnCheckedChangeListener { _, checked ->
-            prefs.edit().putBoolean("keep_awake", checked).apply()
-            HidClient.configure(bleMode, checked)      // the service applies it
-        }
-        val awakeText = LinearLayout(this)
-        awakeText.orientation = LinearLayout.VERTICAL
-        awakeText.addView(txt("Keep reconnecting when closed", 15f, 0))
-        awakeText.addView(
-            txt(
-                "Keeps the background service awake while the screen is off, so it can reconnect to your PC " +
-                    "even when the app is closed. Uses a little extra battery.",
-                12f, 1
-            )
-        )
-        val awakeRow = LinearLayout(this)
-        awakeRow.orientation = LinearLayout.HORIZONTAL
-        awakeRow.gravity = Gravity.CENTER_VERTICAL
-        awakeRow.addView(awakeText, lp(0, WRAP, 1f))
-        awakeRow.addView(awakeSwitch)
-        connCard.addView(awakeRow, lp(MATCH, WRAP).apply { topMargin = dp(16) })
         addCard(connCard)
 
         frame.addView(settingsPage, FrameLayout.LayoutParams(MATCH, MATCH))
@@ -1222,7 +1194,7 @@ class MainActivity : Activity() {
     }
 
     private fun ensureBackend() {
-        if (!HidClient.running && hasBluetoothPermission()) launchBackend()
+        if (HidHost.backend == null && hasBluetoothPermission()) launchBackend()
     }
 
     private fun makeDiscoverable() {

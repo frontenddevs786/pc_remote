@@ -41,16 +41,13 @@ keyboard button and full-screen controls (top bar and left drawer) appear once a
 
 ## Background connection
 
-The screen and the Bluetooth link run in two separate Android processes. The Bluetooth link (a foreground
-service) lives in the main process; the screen runs in its own `:ui` process and talks to the service
-(see `HidClient.kt` and `HidService.kt`). Closing the app, or swiping it out of recent apps, ends only the
-screen process, so the notification and the PC connection stay. The app is shown in recent apps like any
-other app. Tap the "PC Remote" notification to open the screen again, or its **Stop** button to
-disconnect and quit completely.
+The Bluetooth link is held by a foreground service, so it stays connected while the app is open or
+minimized. When you close the app (swipe it out of recent apps or kill it), the service, the connection
+and the notification are all closed too, and nothing restarts them until you open the app again. The app is
+shown in recent apps like any other app.
 
-If a phone's vendor kills the whole app anyway, the service is restarted automatically (sticky restart plus
-a backup alarm) and after a reboot (unless you pressed Stop). On some phones (vivo, Xiaomi, Oppo, Huawei)
-also set battery usage to "Unrestricted" and enable Auto-start.
+The "PC Remote" notification shows the state; tap it to open the app, or tap its **Stop** button to
+disconnect and quit completely.
 
 ## Reconnecting
 
