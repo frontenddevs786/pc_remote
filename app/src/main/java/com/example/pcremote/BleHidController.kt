@@ -65,7 +65,7 @@ class BleHidController(
 
     override var connectionListener: ((Boolean) -> Unit)? = null
     override val isConnected: Boolean get() = host != null
-    private val prefs = context.getSharedPreferences("cfg", Context.MODE_PRIVATE)
+    private val prefs = context.getSharedPreferences("link", Context.MODE_PRIVATE)
     private val handler = Handler(Looper.getMainLooper())
     private var server: BluetoothGattServer? = null
     private var advertiser: BluetoothLeAdvertiser? = null

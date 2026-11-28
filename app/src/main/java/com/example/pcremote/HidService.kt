@@ -17,7 +17,13 @@ import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
 import android.os.Build
+import android.os.Bundle
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
+import android.os.Message
+import android.os.Messenger
+import android.os.PowerManager
 import android.os.SystemClock
 
 /**
@@ -31,7 +37,9 @@ class HidService : Service() {
         private const val CHANNEL = "pcremote_link"
         private const val NOTIF_ID = 1
         private const val ACTION_STOP = "com.example.pcremote.STOP"
-        private const val PREFS = "cfg"
+        // Owned by this (main) process only. The screen runs in another process and has its own "cfg" file;
+        // two processes must never write the same preferences file.
+        private const val PREFS = "link"
         private const val KEY_WANTED = "svc_wanted"
 
         /** True once the app has been opened, until the user presses Stop. Decides if we restart after a kill or reboot. */
@@ -44,8 +52,7 @@ class HidService : Service() {
 
         /** Starts the service on behalf of the user (opening the app counts as asking for it). */
         fun start(ctx: Context) {
-            setWanted(ctx, true)
-            startInternal(ctx)
+            startInternal(ctx, byUser = true)
         }
 
         /** Used by boot / restart paths; does nothing if the user pressed Stop earlier. */
@@ -53,9 +60,9 @@ class HidService : Service() {
             if (isWanted(ctx)) startInternal(ctx)
         }
 
-        private fun startInternal(ctx: Context) {
+        private fun startInternal(ctx: Context, byUser: Boolean = false) {
             try {
-                val i = Intent(ctx, HidService::class.java)
+                val i = Intent(ctx, HidService::class.java).putExtra("user", byUser)
                 if (Build.VERSION.SDK_INT >= 26) ctx.startForegroundService(i) else ctx.startService(i)
             } catch (e: Exception) {
                 // Not allowed to start right now; the Activity will retry next time it is shown.
@@ -80,7 +87,154 @@ class HidService : Service() {
         }
     }
 
-    override fun onBind(intent: Intent?): IBinder? = null
+    private val beat = Handler(Looper.getMainLooper())
+    private var wake: PowerManager.WakeLock? = null
+
+    /**
+     * Runs every minute while the service lives, even with no Activity. If the Bluetooth backend has
+     * silently died (Bluetooth restarted, registration lost) it is rebuilt, and if no PC is connected
+     * it tries again. This is what makes "app closed" behave the same as "app open".
+     */
+    private val heartbeat = object : Runnable {
+        override fun run() {
+            try {
+                if (hasBluetoothPermission()) {
+                    if (HidHost.backend == null) {
+                        HidHost.log("Heartbeat: backend missing, restarting it")
+                        startBackendIfAllowed()
+                    } else if (!HidHost.connected) {
+                        HidHost.backend?.reconnect()
+                    }
+                }
+            } catch (e: Exception) {
+                HidHost.log("Heartbeat error: $e")
+            }
+            beat.postDelayed(this, 60_000)
+        }
+    }
+
+    private fun applyWakeLock() {
+        val want = link.getBoolean("keep_awake", true)
+        try {
+            if (want && wake == null) {
+                wake = getSystemService(PowerManager::class.java)
+                    .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "pcremote:link")
+                    .also { it.setReferenceCounted(false); it.acquire() }
+                HidHost.log("Wake lock on")
+            } else if (!want && wake != null) {
+                releaseWakeLock()
+            }
+        } catch (e: Exception) {
+            HidHost.log("Wake lock failed: $e")
+        }
+    }
+
+    private fun releaseWakeLock() {
+        try {
+            wake?.takeIf { it.isHeld }?.release()
+        } catch (e: Exception) {
+            // ignore
+        }
+        wake = null
+    }
+
+    // ---------- link to the screen (runs in another process) ----------
+
+    private var client: Messenger? = null
+    private val link get() = getSharedPreferences(PREFS, MODE_PRIVATE)
+
+    private val inbox = Messenger(object : Handler(Looper.getMainLooper()) {
+        override fun handleMessage(m: Message) {
+            val b = HidHost.backend
+            when (m.what) {
+                Ipc.REGISTER -> {
+                    client = m.replyTo
+                    pushState()
+                }
+                Ipc.UNREGISTER -> client = null
+                Ipc.CONFIG -> {
+                    link.edit().putBoolean("ble", m.arg1 == 1).putBoolean("keep_awake", m.arg2 == 1).apply()
+                    applyWakeLock()
+                }
+                Ipc.MOUSE -> b?.mouse(
+                    (m.arg1 shl 16) shr 16, m.arg1 shr 16,
+                    m.arg2 and 0xFF, ((m.arg2 shr 8) and 0xFF).toByte().toInt()
+                )
+                Ipc.PRESS -> b?.press(m.arg1, m.arg2)
+                Ipc.TYPE -> b?.typeChar(m.arg1.toChar(), m.arg2)
+                Ipc.CONSUMER -> b?.consumer(m.arg1)
+                Ipc.ADVERTISE -> b?.advertise()
+                Ipc.RECONNECT -> b?.reconnect()
+                Ipc.CONNECT_TO -> {
+                    m.data.setClassLoader(BluetoothDevice::class.java.classLoader)
+                    @Suppress("DEPRECATION")
+                    val d = m.data.getParcelable<BluetoothDevice>("d")
+                    if (d != null) b?.connectTo(d)
+                }
+                Ipc.SWITCH -> {
+                    val ble = m.arg1 == 1
+                    link.edit().putBoolean("ble", ble).apply()
+                    if (hasBluetoothPermission()) HidHost.switchMode(applicationContext, ble)
+                    pushState()
+                }
+                Ipc.ENSURE -> {
+                    val ble = m.arg1 == 1
+                    link.edit().putBoolean("ble", ble).apply()
+                    if (hasBluetoothPermission()) {
+                        HidHost.ensure(applicationContext, ble)
+                        if (!HidHost.connected) HidHost.backend?.reconnect()
+                    }
+                    pushState()
+                }
+            }
+        }
+    })
+
+    override fun onBind(intent: Intent?): IBinder? = inbox.binder
+
+    private fun send(m: Message) {
+        try {
+            client?.send(m)
+        } catch (e: Exception) {
+            client = null      // the screen is gone
+        }
+    }
+
+    private fun pushState() {
+        if (client == null) return
+        val ble = link.getBoolean("ble", true)
+        val addrKey = if (ble) "ble_last_host" else "last_host"
+        val nameKey = if (ble) "ble_last_host_name" else "last_host_name"
+        val m = Message.obtain(null, Ipc.STATE, if (HidHost.connected) 1 else 0, 0)
+        m.data = Bundle().apply {
+            putBoolean("running", HidHost.backend != null)
+            putString("name", link.getString(nameKey, null))
+            putBoolean("hasHost", link.getString(addrKey, null) != null)
+        }
+        send(m)
+    }
+
+    private fun pushStatus(text: String) {
+        if (client == null) return
+        val m = Message.obtain(null, Ipc.STATUS)
+        m.data = Bundle().apply { putString("m", text) }
+        send(m)
+    }
+
+    /** One-time copy of the remembered PC from the old single-process preferences file. */
+    private fun migratePrefs() {
+        val l = link
+        if (l.getBoolean("migrated", false)) return
+        val old = getSharedPreferences("cfg", MODE_PRIVATE)
+        val e = l.edit()
+        for (k in listOf("last_host", "last_host_name", "ble_last_host", "ble_last_host_name")) {
+            old.getString(k, null)?.let { e.putString(k, it) }
+        }
+        e.putBoolean("ble", old.getBoolean("ble", true))
+        e.putBoolean("keep_awake", old.getBoolean("keep_awake", true))
+        e.putBoolean("migrated", true)
+        e.apply()
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -90,7 +244,10 @@ class HidService : Service() {
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL, "PC connection", NotificationManager.IMPORTANCE_LOW)
         )
+        migratePrefs()
         HidHost.notifyService = { refreshNotification() }
+        HidHost.uiConnection = { pushState() }
+        HidHost.uiStatus = { pushStatus(it) }
         val filter = IntentFilter().apply {
             addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
             addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
@@ -100,9 +257,12 @@ class HidService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         HidHost.log("Service onStartCommand (${if (intent == null) "restarted by the system" else "started by the app"})")
+        if (intent?.getBooleanExtra("user", false) == true) setWanted(this, true)
         if (intent?.action == ACTION_STOP) {
             setWanted(this, false)
             cancelRestart()
+            beat.removeCallbacks(heartbeat)
+            releaseWakeLock()
             HidHost.shutdown()
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
@@ -127,6 +287,9 @@ class HidService : Service() {
         }
         // After a system restart the backend is gone; bring it back.
         startBackendIfAllowed()
+        applyWakeLock()
+        beat.removeCallbacks(heartbeat)
+        beat.postDelayed(heartbeat, 60_000)
         return START_STICKY
     }
 
@@ -148,6 +311,10 @@ class HidService : Service() {
     override fun onDestroy() {
         HidHost.log("Service onDestroy")
         HidHost.notifyService = null
+        HidHost.uiConnection = null
+        HidHost.uiStatus = null
+        beat.removeCallbacks(heartbeat)
+        releaseWakeLock()
         try {
             unregisterReceiver(btReceiver)
         } catch (e: Exception) {
@@ -199,7 +366,7 @@ class HidService : Service() {
 
     private fun startBackendIfAllowed() {
         if (HidHost.backend == null && hasBluetoothPermission()) {
-            val ble = getSharedPreferences("cfg", MODE_PRIVATE).getBoolean("ble", true)
+            val ble = link.getBoolean("ble", true)
             HidHost.ensure(applicationContext, ble)
         }
     }

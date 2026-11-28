@@ -92,7 +92,7 @@ class HidController(
     }
 
     override var connectionListener: ((Boolean) -> Unit)? = null
-    private val prefs = context.getSharedPreferences("cfg", Context.MODE_PRIVATE)
+    private val prefs = context.getSharedPreferences("link", Context.MODE_PRIVATE)
     private val handler = Handler(Looper.getMainLooper())
     private var hid: BluetoothHidDevice? = null
     @Volatile private var host: BluetoothDevice? = null
@@ -204,11 +204,22 @@ class HidController(
 
         override fun onServiceDisconnected(profile: Int) {
             hid = null
+            isRegistered = false
+            val wasConnected = host != null
             host = null
+            if (wasConnected) connectionListener?.invoke(false)
+            // The system's Bluetooth process restarted: register again instead of staying dead.
+            if (!stopped) {
+                onStatus("Bluetooth service restarted, registering again")
+                handler.postDelayed({ if (!stopped && hid == null) start() }, 3_000)
+            }
         }
     }
 
+    @Volatile private var stopped = false
+
     override fun start() {
+        stopped = false
         val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
         if (adapter == null) {
             onStatus("This device has no Bluetooth")
@@ -225,6 +236,7 @@ class HidController(
     }
 
     override fun stop() {
+        stopped = true
         handler.removeCallbacksAndMessages(null)
         try {
             hid?.unregisterApp()
