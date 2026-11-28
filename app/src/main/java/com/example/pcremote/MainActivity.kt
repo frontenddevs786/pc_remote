@@ -273,7 +273,6 @@ class MainActivity : Activity() {
         }
         refreshLayout()
         updateStatusUi()
-        if (changed && connected) maybeAskBackgroundAccess()
         if (changed && !connected) {
             welcome.alpha = 0f
             welcome.animate().alpha(1f).setDuration(250).start()
@@ -376,45 +375,6 @@ class MainActivity : Activity() {
         } else {
             pickDevice()
         }
-    }
-
-    // ---------- keep running in the background ----------
-
-    private fun isIgnoringBatteryOpt(): Boolean =
-        (getSystemService(POWER_SERVICE) as PowerManager).isIgnoringBatteryOptimizations(packageName)
-
-    private fun requestBackgroundAccess() {
-        try {
-            if (!isIgnoringBatteryOpt()) {
-                startActivity(
-                    Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
-                        .setData(Uri.parse("package:$packageName"))
-                )
-            } else {
-                startActivity(
-                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).setData(Uri.parse("package:$packageName"))
-                )
-            }
-        } catch (e: Exception) {
-            startActivity(Intent(Settings.ACTION_SETTINGS))
-        }
-    }
-
-    /** One-time prompt after the first successful connection. */
-    private fun maybeAskBackgroundAccess() {
-        if (prefs.getBoolean("bg_asked", false) || isIgnoringBatteryOpt()) return
-        prefs.edit().putBoolean("bg_asked", true).apply()
-        dialogBuilder()
-            .setTitle("Keep connected in the background")
-            .setMessage(
-                "Some phones stop apps when you close them, which disconnects your PC. " +
-                    "Allow PC Remote to run without battery restrictions so the connection stays alive. " +
-                    "On vivo, Xiaomi, Oppo and similar phones also enable Auto-start / Background activity " +
-                    "for this app in the phone's settings."
-            )
-            .setPositiveButton("Allow") { _, _ -> requestBackgroundAccess() }
-            .setNegativeButton("Not now", null)
-            .show()
     }
 
     // ---------- permissions ----------
@@ -947,10 +907,6 @@ class MainActivity : Activity() {
             setFullScreen(true)
         }
         drawer.addView(fullDrawerItem)
-        drawer.addView(drawerItem(Ic.TUNE, "Keep running in background") {
-            closeDrawer()
-            requestBackgroundAccess()
-        })
         drawer.addView(drawerItem(Ic.TUNE, "Connection log") {
             closeDrawer()
             showLog()
